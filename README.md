@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.11</h1>
+<h1 align="center">CyberCord 0.12</h1>
 <p align="center"><b>Чат, голос, музыка и видео-кружки без серверов</b> — SocioCyberneering Inc. Communication Cooperations</p>
 
 ## Суть проекта
@@ -86,7 +86,23 @@ CyberCord похож на Discord, но у него нет центрально�
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
 
-## Что нового в 0.11
+## Что нового в 0.12
+
+- **Правка и удаление своих сообщений.** Наведите на своё сообщение: ✎ —
+  изменить, 🗑 — удалить (второй клик подтверждает). Стрелка ↑ в пустом поле
+  открывает правку последнего сообщения, Esc — отмена.
+- **Индекс и дата, как в общей семантике.** У исправленного сообщения стоит
+  «ред.₂ · 21.11 18:10»: сообщение₁ ≠ сообщение₂. При наведении видны все
+  версии с датами — прошлое не переписывается незаметно.
+- **Без сервера, но безопасно.** Каждое сообщение подписано ключом автора;
+  правку или удаление примет только та нода, которая видит подпись того же
+  автора — и при синхронизации истории тоже. Подробно —
+  [протокол, раздел 5а](docs/PROTOCOL.md).
+- Время в чате теперь местное.
+
+![Правка сообщения: индекс версии и дата](docs/img/screen-edit.png)
+
+## Что было в 0.11
 
 - **«Слова имеют значение».** Если в вашем сообщении есть оскорбление или мат,
   сообщение всё равно отправляется как есть — без цензуры, лимитов и банов.
@@ -304,12 +320,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.11.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.12.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.11.0-linux-x86_64.tar.gz
-cd cybercord-0.11.0-linux-x86_64
+tar xf cybercord-0.12.0-linux-x86_64.tar.gz
+cd cybercord-0.12.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -509,6 +525,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.12:** edit and delete your own messages (hover ✎/🗑, ↑ to edit the last one). Edited messages show a version index and date, general-semantics style ("edited₂ · 21.11 18:10"), with all versions on hover. Every message is now signed by its author, so edits and deletes are accepted only from the author, even when history is relayed by other nodes. Local time in chat.
 
 **The idea:** no owner, no centre, no bans, no limits: the network is held by its people, and you are responsible for the future. **0.11** adds "Words matter": if your own message contains an insult it is still sent as written, and only you are shown a short read on general semantics ([Words are not people](docs/words-matter.en.md)), then [The price of words](docs/consequences.en.md) at the tenth time. Local only, can be turned off. Plus [About SocioCyberneering Inc.](docs/sociocyberneering.en.md) and a design for [100 people in one voice channel](docs/VOICE-100.md) ([picture](docs/img/voice-100.en.svg)).
 

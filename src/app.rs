@@ -13,7 +13,7 @@ use eframe::egui::{self, load::SizedTexture, Align2, Color32, Id, LayerId, Order
 use cybercord_node::net::{self, Cmd, NetConfig, NetStats, NetworkHandle, UiEvent, MAX_BLOB};
 use cybercord_node::servers::SERVERS;
 use cybercord_node::store::{self, Settings};
-use cybercord_node::types::{clock, now_ms, parse_connect_code, Attachment, ChannelId, ChatEvent, Friend, MediaKind};
+use cybercord_node::types::{clock, now_ms, short_date, subscript, parse_connect_code, Attachment, ChannelId, ChatEvent, Friend, MediaKind};
 use cybercord_node::voice;
 
 use crate::camera;
@@ -43,9 +43,24 @@ fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
 }
 
+#[derive(Default)]
 struct ChannelView {
     msgs: Vec<ChatEvent>,
+    /// edit/delete events (applied to `msgs` when drawing)
+    edits: Vec<ChatEvent>,
     seen: HashSet<String>,
+}
+
+impl ChannelView {
+    fn add(&mut self, ev: ChatEvent) {
+        if self.seen.insert(ev.id.clone()) {
+            if ev.edits.is_some() {
+                self.edits.push(ev);
+            } else {
+                self.msgs.push(ev);
+            }
+        }
+    }
 }
 struct PeerView {
     name: Option<String>,
@@ -178,6 +193,14 @@ pub struct CyberApp {
     show_downloads: bool,
     /// open in-app document ("Words matter" etc.) and when the last hint toast was shown
     doc_open: Option<Doc>,
+    /// editing one of my messages: (channel, message id, new version index) and the draft it replaced
+    editing: Option<(ChannelId, String, u32)>,
+    edit_draft: String,
+    /// frames left to (re)request keyboard focus for the composer
+    focus_input: u8,
+    /// message under the pointer (last frame) and a pending \"delete?\" confirmation
+    hover_msg: Option<String>,
+    confirm_delete: Option<(String, Instant)>,
     words_toast_at: Option<Instant>,
 }
 
@@ -282,6 +305,11 @@ impl CyberApp {
             transfers: Vec::new(),
             show_downloads: false,
             doc_open: None,
+            editing: None,
+            edit_draft: String::new(),
+            focus_input: 0,
+            hover_msg: None,
+            confirm_delete: None,
             words_toast_at: None,
             mic_test_msg: None,
             test_player: None,
@@ -433,11 +461,9 @@ impl CyberApp {
                 }
                 UiEvent::Status(s) => self.status = s,
                 UiEvent::Chat(ev) => {
-                    let view = self.views.entry(ev.channel.clone()).or_insert_with(|| ChannelView { msgs: Vec::new(), seen: HashSet::new() });
-                    if view.seen.insert(ev.id.clone()) {
-                        view.msgs.push(ev);
-                        view.msgs.sort_by_key(|m| m.ts_ms);
-                    }
+                    let view = self.views.entry(ev.channel.clone()).or_default();
+                    view.add(ev);
+                    view.msgs.sort_by_key(|m| m.ts_ms);
                 }
                 UiEvent::Peer { id, name, connected } => {
                     if connected && !self.peers.get(&id).map(|p| p.connected).unwrap_or(false) {
@@ -482,11 +508,9 @@ impl CyberApp {
         }
         self.opened.insert(ch.clone());
         let recent = store::load_recent(ch, net::HISTORY_ON_OPEN_PUB);
-        let view = self.views.entry(ch.clone()).or_insert_with(|| ChannelView { msgs: Vec::new(), seen: HashSet::new() });
+        let view = self.views.entry(ch.clone()).or_default();
         for ev in recent {
-            if view.seen.insert(ev.id.clone()) {
-                view.msgs.push(ev);
-            }
+            view.add(ev);
         }
         view.msgs.sort_by_key(|m| m.ts_ms);
         let since = view.msgs.last().map(|m| m.ts_ms).unwrap_or(0);
@@ -505,6 +529,15 @@ impl CyberApp {
 
     fn send_current(&mut self) {
         let body = emoji::shortcodes_to_unicode(self.input.trim());
+        if let Some((channel, target, rev)) = self.editing.take() {
+            self.input = std::mem::take(&mut self.edit_draft);
+            let current = self.views.get(&channel).and_then(|v| v.msgs.iter().find(|m| m.id == target).map(|m| cybercord_node::history::resolve(m, &v.edits).body));
+            if !body.is_empty() && current.as_deref() != Some(body.as_str()) {
+                self.words_check(&body);
+                let _ = self.handle.cmd_tx.send(Cmd::EditMessage { channel, target, body: Some(body), rev });
+            }
+            return;
+        }
         if body.is_empty() {
             return;
         }
@@ -516,6 +549,42 @@ impl CyberApp {
         } else {
             let _ = self.handle.cmd_tx.send(Cmd::SendChat { channel: ch, body });
         }
+    }
+
+    /// Put one of my messages into the composer for editing.
+    fn start_edit(&mut self, ch: &ChannelId, id: &str) {
+        let Some(view) = self.views.get(ch) else { return };
+        let Some(m) = view.msgs.iter().find(|m| m.id == id) else { return };
+        if m.from != self.self_id {
+            return;
+        }
+        let r = cybercord_node::history::resolve(m, &view.edits);
+        if self.editing.is_none() {
+            self.edit_draft = std::mem::take(&mut self.input);
+        }
+        self.input = r.body;
+        self.editing = Some((ch.clone(), id.to_string(), r.rev + 1));
+        self.focus_input = 3;
+    }
+
+    fn cancel_edit(&mut self) {
+        if self.editing.take().is_some() {
+            self.input = std::mem::take(&mut self.edit_draft);
+        }
+    }
+
+    fn delete_message(&mut self, ch: &ChannelId, id: &str) {
+        let Some(view) = self.views.get(ch) else { return };
+        let Some(m) = view.msgs.iter().find(|m| m.id == id) else { return };
+        if m.from != self.self_id {
+            return;
+        }
+        let rev = cybercord_node::history::resolve(m, &view.edits).rev + 1;
+        if self.editing.as_ref().map(|e| e.1 == id).unwrap_or(false) {
+            self.cancel_edit();
+        }
+        self.confirm_delete = None;
+        let _ = self.handle.cmd_tx.send(Cmd::EditMessage { channel: ch.clone(), target: id.to_string(), body: None, rev });
     }
 
     /// "Words matter": the message is always sent as written. If it contains
@@ -1504,31 +1573,95 @@ impl CyberApp {
         ui.add_space(4.0);
         sep(ui);
 
-        let input_h = 50.0;
+        let input_h = if self.editing.as_ref().map(|e| e.0 == *ch).unwrap_or(false) { 74.0 } else { 50.0 };
         let avail = ui.available_height() - input_h;
-        let msgs: Vec<ChatEvent> = self.views.get(ch).map(|v| v.msgs.clone()).unwrap_or_default();
+        // (message, what to show after edits); deleted messages are left out
+        let msgs: Vec<(ChatEvent, cybercord_node::history::Resolved)> = self
+            .views
+            .get(ch)
+            .map(|v| v.msgs.iter().map(|m| (m.clone(), cybercord_node::history::resolve(m, &v.edits))).filter(|(_, r)| !r.deleted).collect())
+            .unwrap_or_default();
+        if self.confirm_delete.as_ref().map(|(_, t)| t.elapsed() > Duration::from_secs(4)).unwrap_or(false) {
+            self.confirm_delete = None;
+        }
+        let mut action: Option<(bool, String)> = None; // (delete?, id)
+        let mut new_hover: Option<String> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(avail).stick_to_bottom(true).show(ui, |ui| {
             if msgs.is_empty() {
                 ui.add_space(8.0);
                 ui.colored_label(th().ink2, self.t("no_messages"));
             }
-            for m in &msgs {
-                let mine = m.name == self.self_name;
+            for (m, r) in &msgs {
+                let mine = if m.from.is_empty() { m.name == self.self_name } else { m.from == self.self_id };
+                let editable = !m.from.is_empty() && m.from == self.self_id;
+                let editing_this = self.editing.as_ref().map(|e| e.1 == m.id).unwrap_or(false);
+                let confirming = self.confirm_delete.as_ref().map(|c| c.0 == m.id).unwrap_or(false);
+                let show_tools = editable && (self.hover_msg.as_deref() == Some(m.id.as_str()) || confirming);
+                let bg = ui.painter().add(egui::Shape::Noop);
+                let top = ui.cursor().min;
                 ui.horizontal(|ui| {
+                    ui.set_min_height(22.0);
                     ui.colored_label(th().ink2, RichText::new(clock(m.ts_ms)).small());
                     ui.label(RichText::new(&m.name).color(if mine { th().accent } else { th().ink }).b());
+                    if r.rev > 1 {
+                        // dated and indexed, as in general semantics: message₂ (date)
+                        let mark = format!("{}{} · {}", self.t("edited_mark"), subscript(r.rev), short_date(r.ts_ms));
+                        ui.label(RichText::new(mark).color(th().ink2).small()).on_hover_ui(|ui| {
+                            ui.set_max_width(360.0);
+                            ui.label(RichText::new(self.t("versions_h")).b());
+                            for (rev, ts, body) in &r.versions {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new(format!("{}{} · {}", self.t("version_n"), subscript(*rev), short_date(*ts))).color(th().ink2).small());
+                                    ui.label(if body.is_empty() { "—".to_string() } else { body.chars().take(240).collect::<String>() });
+                                });
+                            }
+                        });
+                    }
+                    if show_tools {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(6.0);
+                            if confirming {
+                                if ui.add(egui::Button::new(RichText::new(self.t("delete_confirm")).color(Color32::WHITE).b().small()).fill(th().red).rounding(Rounding::same(6.0))).clicked() {
+                                    action = Some((true, m.id.clone()));
+                                }
+                            } else {
+                                let trash = self.icons.get(ui.ctx(), "trash", SYM_TRASH);
+                                if icon_button_k(ui, trash, th().ink2, th().window, 22.0, 0.72).on_hover_text(self.t("delete_msg")).clicked() {
+                                    self.confirm_delete = Some((m.id.clone(), Instant::now()));
+                                }
+                            }
+                            let pencil = self.icons.get(ui.ctx(), "pencil", SYM_PENCIL);
+                            if icon_button_k(ui, pencil, if editing_this { th().accent } else { th().ink2 }, th().window, 22.0, 0.72).on_hover_text(self.t("edit_msg")).clicked() {
+                                action = Some((false, m.id.clone()));
+                            }
+                        });
+                    }
                 });
                 ui.indent(&m.id, |ui| {
-                    if !m.body.is_empty() {
-                        self.rich_text(ui, &m.body, th().ink, 14.0);
+                    if !r.body.is_empty() {
+                        self.rich_text(ui, &r.body, th().ink, 14.0);
                     }
                     if let Some(a) = &m.attach {
                         self.media_widget(ui, a, ch);
                     }
                 });
+                let rect = Rect::from_min_max(top - egui::vec2(4.0, 2.0), egui::pos2(ui.max_rect().max.x, ui.cursor().min.y + 2.0));
+                let hovered = ui.rect_contains_pointer(rect);
+                if hovered {
+                    new_hover = Some(m.id.clone());
+                }
+                if hovered || editing_this {
+                    ui.painter().set(bg, egui::Shape::rect_filled(rect, Rounding::same(6.0), if editing_this { th().sel } else { th().card }));
+                }
                 ui.add_space(6.0);
             }
         });
+        self.hover_msg = new_hover;
+        match action {
+            Some((true, id)) => self.delete_message(ch, &id),
+            Some((false, id)) => self.start_edit(ch, &id),
+            None => {}
+        }
 
         ui.add_space(4.0);
         sep(ui);
@@ -1536,6 +1669,24 @@ impl CyberApp {
             let row = ui.horizontal(|ui| self.voice_message_bar(ui, ch));
             self.anchor("composer", row.response.rect.expand(2.0));
             return;
+        }
+        if let Some((ech, _, rev)) = self.editing.clone() {
+            if ech != *ch {
+                self.cancel_edit();
+            } else {
+                ui.horizontal(|ui| {
+                    let pencil = self.icons.get(ui.ctx(), "pencil", SYM_PENCIL);
+                    ui.add(egui::Image::new(SizedTexture::new(pencil, egui::vec2(14.0, 14.0))).tint(th().accent));
+                    ui.label(RichText::new(format!("{}{}", self.t("editing_bar"), subscript(rev))).color(th().accent).b().small());
+                    ui.colored_label(th().ink2, RichText::new(self.t("editing_keys")).small());
+                    if ui.add(egui::Button::new(RichText::new(self.t("edit_cancel")).small()).frame(false)).clicked() {
+                        self.cancel_edit();
+                    }
+                });
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.cancel_edit();
+                }
+            }
         }
         let row = ui.horizontal(|ui| {
             let btns = ui.horizontal(|ui| {
@@ -1570,7 +1721,21 @@ impl CyberApp {
             } else {
                 self.t("message_ch").replace("{ch}", &ch.channel)
             };
-            let resp = ui.add_sized([ui.available_width() - 118.0, 32.0], egui::TextEdit::singleline(&mut self.input).hint_text(hint));
+            let resp = ui.add_sized([ui.available_width() - 118.0, 32.0], egui::TextEdit::singleline(&mut self.input).id(Id::new("composer_input")).hint_text(hint));
+            // a click on ✎ ends with "pointer released elsewhere", which drops
+            // focus in that same frame, so ask again for a few frames
+            if self.focus_input > 0 {
+                self.focus_input -= 1;
+                resp.request_focus();
+                ui.ctx().request_repaint();
+            }
+            // ↑ in an empty composer edits my last message (like Discord)
+            if resp.has_focus() && self.input.is_empty() && self.editing.is_none() && ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                let last = self.views.get(ch).and_then(|v| v.msgs.iter().rev().find(|m| m.from == self.self_id && !cybercord_node::history::resolve(m, &v.edits).deleted).map(|m| m.id.clone()));
+                if let Some(id) = last {
+                    self.start_edit(ch, &id);
+                }
+            }
             let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if ui.add(egui::Button::new(RichText::new(self.t("send")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(80.0, 32.0))).clicked() || enter {
                 self.send_current();
@@ -2062,6 +2227,8 @@ const SYM_HASH: &[u8] = include_bytes!("../assets/symbolic/hash.png");
 const SYM_MIC: &[u8] = include_bytes!("../assets/symbolic/mic.png");
 const SYM_MIC_OFF: &[u8] = include_bytes!("../assets/symbolic/mic-off.png");
 const SYM_HANGUP: &[u8] = include_bytes!("../assets/symbolic/hangup.png");
+const SYM_PENCIL: &[u8] = include_bytes!("../assets/symbolic/pencil.png");
+const SYM_TRASH: &[u8] = include_bytes!("../assets/symbolic/trash.png");
 const SYM_GEAR: &[u8] = include_bytes!("../assets/symbolic/gear.png");
 const SYM_HEADPHONES: &[u8] = include_bytes!("../assets/symbolic/headphones.png");
 /// Wordless step-by-step pictures (docs/img/*.svg); captions come from i18n.
@@ -2181,10 +2348,15 @@ fn name_color(name: &str) -> Color32 {
 }
 
 fn icon_button(ui: &mut egui::Ui, tex: egui::TextureId, fg: Color32, bg: Color32, size: f32) -> egui::Response {
+    icon_button_k(ui, tex, fg, bg, size, 0.52)
+}
+
+/// `icon_button` with the glyph at `k` × the button size.
+fn icon_button_k(ui: &mut egui::Ui, tex: egui::TextureId, fg: Color32, bg: Color32, size: f32, k: f32) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     let bg = if resp.hovered() { bg.gamma_multiply(0.85) } else { bg };
     ui.painter().rect_filled(r, Rounding::same(size * 0.3), bg);
-    let s = size * 0.52;
+    let s = size * k;
     ui.painter().image(tex, Rect::from_center_size(r.center(), egui::vec2(s, s)), Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), fg);
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -3547,7 +3719,7 @@ fn spawn_event_pump(rx: std::sync::mpsc::Receiver<UiEvent>, tx: std::sync::mpsc:
                     let (enabled, me, active, lang) = st.lock().map(|s| (s.enabled, s.my_name.clone(), s.active, s.lang)).unwrap_or((false, String::new(), true, Lang::En));
                     // only fresh messages (not history arriving by sync), once each
                     let fresh = m.ts_ms + 120_000 > now_ms() && m.ts_ms + 5_000 > started;
-                    if enabled && !active && fresh && m.name != me && seen.insert(m.id.clone()) {
+                    if enabled && !active && fresh && m.edits.is_none() && m.name != me && seen.insert(m.id.clone()) {
                         let mention = me.chars().count() >= 2 && m.body.to_lowercase().contains(&me.to_lowercase());
                         if m.channel.is_dm() || mention {
                             let title = if m.channel.is_dm() { m.name.clone() } else { format!("{} · #{}", m.name, m.channel.channel) };

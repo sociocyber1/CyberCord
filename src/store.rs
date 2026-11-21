@@ -71,12 +71,53 @@ pub fn load_ids(channel: &ChannelId) -> HashSet<String> {
         .collect()
 }
 
+/// A valid delete arrived: blank the original and all its earlier versions on
+/// disk (only lines by the same author). The delete event itself stays, so it
+/// can reach peers that still hold the message. Blanked lines lose their
+/// signature, so nobody accepts them again from us.
+pub fn redact(channel: &ChannelId, target: &str, author: &str) {
+    if author.is_empty() {
+        return;
+    }
+    let path = channel_path(channel);
+    let Ok(text) = fs::read_to_string(&path) else { return };
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let mut keep = line.to_string();
+        if let Ok(mut ev) = serde_json::from_str::<ChatEvent>(line) {
+            let is_target = ev.id == target && ev.edits.is_none();
+            let is_old_version = ev.edits.as_deref() == Some(target) && !ev.deleted;
+            if (is_target || is_old_version) && ev.from == author && !ev.sig.is_empty() {
+                ev.body.clear();
+                ev.attach = None;
+                ev.sig.clear();
+                ev.deleted = true;
+                if let Ok(l) = serde_json::to_string(&ev) {
+                    keep = l;
+                    changed = true;
+                }
+            }
+        }
+        out.push_str(&keep);
+        out.push('\n');
+    }
+    if changed {
+        let tmp = path.with_extension("tmp");
+        if fs::write(&tmp, out).is_ok() {
+            let _ = fs::rename(&tmp, &path);
+        }
+    }
+}
+
 /// Events in a channel strictly after `since_ms`, capped at `limit` (newest kept),
 /// oldest-first. Used to answer a peer's history-sync request.
 pub fn load_since(channel: &ChannelId, since_ms: u64, limit: usize) -> Vec<ChatEvent> {
     let mut v: Vec<ChatEvent> = load_recent(channel, 10_000)
         .into_iter()
         .filter(|e| e.ts_ms > since_ms)
+        // blanked (deleted) lines are not worth sending: nobody would accept them
+        .filter(|e| !(e.deleted && e.sig.is_empty()))
         .collect();
     if v.len() > limit {
         v.drain(0..v.len() - limit);

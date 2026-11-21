@@ -59,6 +59,9 @@ pub enum Cmd {
     /// Save a friend (connect code or bare ID), find and dial them, open the DM room.
     AddFriend(Friend),
     SendDm { peer_id: String, body: String },
+    /// Edit (`body = Some`) or delete (`None`) one of my own messages.
+    /// `rev` is the new version index (2 for the first edit).
+    EditMessage { channel: ChannelId, target: String, body: Option<String>, rev: u32 },
     /// Send media (GIF, image, video circle) to a channel or DM (`channel.is_dm()`).
     SendMedia {
         channel: ChannelId,
@@ -446,7 +449,7 @@ async fn run(
     let keypair = load_or_create_identity(&cfg.identity)?;
     let local_peer = keypair.public().to_peer_id();
     let local_id = local_peer.to_base58();
-    let mut swarm = build_swarm(keypair)?;
+    let mut swarm = build_swarm(keypair.clone())?;
 
     let mut topic_of_hash: HashMap<TopicHash, ChannelId> = HashMap::new();
     for ch in servers::all_channels() {
@@ -542,6 +545,8 @@ async fn run(
     let mut ever_connected = false;
     let mut names: HashMap<String, String> = HashMap::new();
     let mut seen_ids: HashMap<ChannelId, HashSet<String>> = HashMap::new();
+    // deletes seen this session (target id → author), to blank an original that arrives after its delete
+    let mut deletes: HashMap<String, String> = HashMap::new();
     let mut scores: HashMap<String, (f64, u64)> = HashMap::new();
     let mut reachable_peers: HashSet<PeerId> = HashSet::new();
     let mut last_hub: (Option<String>, Option<String>) = (None, None);
@@ -623,7 +628,8 @@ async fn run(
                 match cmd {
                     Cmd::Quit => break,
                     Cmd::SendChat { channel, body } => {
-                        let ev = ChatEvent::new(channel.clone(), name.clone(), body);
+                        let mut ev = ChatEvent::new(channel.clone(), name.clone(), body);
+                        ev.sign(&keypair);
                         seen_ids.entry(channel.clone()).or_default().insert(ev.id.clone());
                         store::append(&ev);
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
@@ -780,6 +786,7 @@ async fn run(
                         let hash = store::save_blob(&bytes);
                         let mut ev = ChatEvent::new(channel.clone(), name.clone(), body);
                         ev.attach = Some(Attachment { hash: hash.clone(), kind, name: fname, size: bytes.len() as u64, w, h, dur_ms });
+                        ev.sign(&keypair);
                         seen_ids.entry(channel.clone()).or_default().insert(ev.id.clone());
                         store::append(&ev);
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
@@ -800,9 +807,24 @@ async fn run(
                             wanted.insert(hash, (channel, Instant::now(), 1));
                         }
                     }
+                    Cmd::EditMessage { channel, target, body, rev } => {
+                        let mut ev = ChatEvent::new(channel.clone(), name.clone(), body.clone().unwrap_or_default());
+                        ev.edits = Some(target.clone());
+                        ev.rev = rev.max(2);
+                        ev.deleted = body.is_none();
+                        ev.sign(&keypair);
+                        seen_ids.entry(channel.clone()).or_default().insert(ev.id.clone());
+                        store::append(&ev);
+                        if ev.deleted {
+                            store::redact(&channel, &target, &local_id);
+                        }
+                        emit(&event_tx, UiEvent::Chat(ev.clone()));
+                        let _ = swarm.behaviour_mut().gossipsub.publish(topic_for(&local_id, &channel), Wire::Chat(ev).encode());
+                    }
                     Cmd::SendDm { peer_id, body } => {
                         let ch = ChannelId::dm(peer_id.clone());
-                        let ev = ChatEvent::new(ch.clone(), name.clone(), body);
+                        let mut ev = ChatEvent::new(ch.clone(), name.clone(), body);
+                        ev.sign(&keypair);
                         seen_ids.entry(ch).or_default().insert(ev.id.clone());
                         store::append(&ev);
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
@@ -987,6 +1009,7 @@ async fn run(
                         let _ = swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&crate::transfer::provider_key(&hash)));
                         let mut ev = ChatEvent::new(channel.clone(), name.clone(), body);
                         ev.attach = Some(Attachment { hash, kind: MediaKind::File, name: fname, size, w: 0, h: 0, dur_ms: 0 });
+                        ev.sign(&keypair);
                         seen_ids.entry(channel.clone()).or_default().insert(ev.id.clone());
                         store::append(&ev);
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
@@ -1379,6 +1402,9 @@ async fn run(
                                         ev.channel = local.clone();
                                     }
                                 }
+                                if !ev.admit() {
+                                    continue; // forged signature, or an unsigned edit/delete
+                                }
                                 let set = seen_ids.entry(ev.channel.clone()).or_insert_with(|| store::load_ids(&ev.channel));
                                 if set.insert(ev.id.clone()) {
                                     if !ev.name.is_empty() {
@@ -1390,6 +1416,14 @@ async fn run(
                                         }
                                     }
                                     store::append(&ev);
+                                    if let (true, Some(target)) = (ev.deleted, ev.edits.as_deref()) {
+                                        store::redact(&ev.channel, target, &ev.from);
+                                        deletes.insert(target.to_string(), ev.from.clone());
+                                    } else if ev.edits.is_some() || deletes.contains_key(&ev.id) {
+                                        if let Some(author) = deletes.get(ev.edits.as_deref().unwrap_or(&ev.id)) {
+                                            store::redact(&ev.channel, ev.edits.as_deref().unwrap_or(&ev.id), author);
+                                        }
+                                    }
                                     emit(&event_tx, UiEvent::Chat(ev));
                                 }
                             }

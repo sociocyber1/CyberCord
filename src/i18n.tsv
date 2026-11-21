@@ -324,3 +324,12 @@ words_doc2	The price of words	Цена слов	Ціна слів	Der Preis der 
 sce_doc	About SocioCyberneering Inc.	О SocioCyberneering Inc.	Про SocioCyberneering Inc.	Über SocioCyberneering Inc.	Acerca de SocioCyberneering Inc.	À propos de SocioCyberneering Inc.	关于 SocioCyberneering Inc.	SocioCyberneering Inc. について
 words_count	Recognised in your messages: {n} (visible only to you)	Распознано в ваших сообщениях: {n} (видно только вам)	Розпізнано у ваших повідомленнях: {n} (видно лише вам)	In deinen Nachrichten erkannt: {n} (nur für dich sichtbar)	Detectado en tus mensajes: {n} (solo lo ves tú)	Repéré dans vos messages : {n} (visible par vous seul)	在你的消息中识别到：{n}（仅你可见）	あなたのメッセージで検出：{n}（あなたにのみ表示）
 words_reset	Reset	Сбросить	Скинути	Zurücksetzen	Restablecer	Réinitialiser	重置	リセット
+edited_mark	edited	ред.	ред.	bearb.	edit.	modif.	已编辑	編集
+versions_h	Versions	Версии	Версії	Versionen	Versiones	Versions	版本	バージョン
+version_n	v	в	в	v	v	v	v	v
+edit_msg	Edit	Изменить	Змінити	Bearbeiten	Editar	Modifier	编辑	編集
+delete_msg	Delete	Удалить	Видалити	Löschen	Eliminar	Supprimer	删除	削除
+delete_confirm	Delete?	Удалить?	Видалити?	Löschen?	¿Eliminar?	Supprimer ?	删除？	削除しますか？
+editing_bar	Editing · version	Редактирование · версия	Редагування · версія	Bearbeiten · Version	Editando · versión	Modification · version	正在编辑 · 版本	編集中 · バージョン
+editing_keys	Enter — save · Esc — cancel	Enter — сохранить · Esc — отмена	Enter — зберегти · Esc — скасувати	Enter — speichern · Esc — abbrechen	Enter — guardar · Esc — cancelar	Entrée — enregistrer · Échap — annuler	Enter 保存 · Esc 取消	Enter 保存 · Esc キャンセル
+edit_cancel	Cancel	Отмена	Скасувати	Abbrechen	Cancelar	Annuler	取消	キャンセル

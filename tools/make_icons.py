@@ -78,6 +78,8 @@ symbolic = {
      ).split()) + ' M16 11.5a4.5 4.5 0 1 0 0.01 0Z"/>',
  "people": f'<g {S}><circle cx="12" cy="11" r="4.5"/><path d="M4 26c0-5 3.6-8 8-8s8 3 8 8"/><circle cx="22.5" cy="10" r="3.5" stroke-width="2.2"/><path d="M22 17c4 0 7 2.5 7 7" stroke-width="2.2"/></g>',
  "home": f'<g {S}><path d="M5 15 L16 5.5 L27 15"/><path d="M8.5 13 V26.5 H23.5 V13"/></g><rect x="13.5" y="18" width="5" height="8.5" rx="1" fill="#fff"/>',
+ "pencil": f'<g {S}><path d="M20.5 6.5 L25.5 11.5 L12 25 H7 V20 Z"/><line x1="17.5" y1="9.5" x2="22.5" y2="14.5"/></g>',
+ "trash": f'<g {S}><line x1="5.5" y1="9" x2="26.5" y2="9"/><path d="M12.5 9 V6 H19.5 V9"/><path d="M8.5 9 L10 27 H22 L23.5 9"/><line x1="13.5" y1="14" x2="14" y2="22.5"/><line x1="18.5" y1="14" x2="18" y2="22.5"/></g>',
  "headphones": f'<g {S}><path d="M6 20v-4a10 10 0 0 1 20 0v4"/></g><rect x="4.5" y="18" width="6" height="9" rx="2.5" fill="#fff"/><rect x="21.5" y="18" width="6" height="9" rx="2.5" fill="#fff"/>',
 }
 

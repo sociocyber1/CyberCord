@@ -135,6 +135,8 @@ commands:
   /devices                       list microphones and speakers
   /find <name>                   search people by name (or ID start)
   /share <path>                  share a file of any size in the open channel (torrent-like)
+  /edit <text>                   edit my last message in the open channel
+  /del                           delete my last message in the open channel
   /get [name]                    download a file posted in the open channel (waits if nobody has it online)
   /files                         downloads and shared files
   /pause|/resume|/cancel <name>  control a download
@@ -192,7 +194,11 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
                 UiEvent::Chat(e) => {
                     let room = if e.channel.is_dm() { "DM".to_string() } else { format!("{}/{}", e.channel.guild, e.channel.channel) };
                     let media = e.attach.as_ref().map(|a| format!(" [{:?} {} {} KB {}…]", a.kind, a.name, a.size / 1024, &a.hash[..12])).unwrap_or_default();
-                    println!("[{}] {room} {}: {}{media}", clock(e.ts_ms), e.name, e.body)
+                    match (&e.edits, e.deleted) {
+                        (Some(t), true) => println!("[{}] {room} {} deleted message {}", clock(e.ts_ms), e.name, &t[..t.len().min(8)]),
+                        (Some(t), false) => println!("[{}] {room} {} edited {} → v{}: {}", clock(e.ts_ms), e.name, &t[..t.len().min(8)], e.rev, e.body),
+                        _ => println!("[{}] {room} {}: {}{media}", clock(e.ts_ms), e.name, e.body),
+                    }
                 }
                 UiEvent::Peer { id, connected, .. } => {
                     // print only real state changes (name refreshes re-send the same state)
@@ -402,6 +408,22 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
                 }
                 "stop" => {
                     player = None;
+                }
+                "edit" | "del" => {
+                    let me = my_id.lock().unwrap().clone();
+                    let all = cybercord_node::store::load_recent(&current, 2000);
+                    let (edits, msgs): (Vec<_>, Vec<_>) = all.into_iter().partition(|e| e.edits.is_some());
+                    let last = msgs.iter().rev().filter(|m| m.from == me).map(|m| (m, cybercord_node::history::resolve(m, &edits))).find(|(_, r)| !r.deleted);
+                    match last {
+                        Some((m, r)) if cmd == "del" => {
+                            let _ = handle.cmd_tx.send(Cmd::EditMessage { channel: current.clone(), target: m.id.clone(), body: None, rev: r.rev + 1 });
+                        }
+                        Some((m, r)) if !arg.is_empty() => {
+                            let _ = handle.cmd_tx.send(Cmd::EditMessage { channel: current.clone(), target: m.id.clone(), body: Some(arg.to_string()), rev: r.rev + 1 });
+                        }
+                        Some(_) => println!("usage: /edit <new text>"),
+                        None => println!("no message of yours here"),
+                    }
                 }
                 "share" => {
                     let _ = handle.cmd_tx.send(Cmd::ShareFile { channel: current.clone(), path: std::path::PathBuf::from(arg), body: String::new() });

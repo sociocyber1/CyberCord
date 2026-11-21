@@ -189,3 +189,4 @@ pub mod voice;
 pub mod rendezvous;
 pub mod transfer;
 pub mod words;
+pub mod history;

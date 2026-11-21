@@ -32,8 +32,14 @@ impl ChannelId {
     }
 }
 
-/// One chat event. Authorship is authenticated at the gossip layer (messages are
-/// signed by the sender's key); `name` is a cosmetic display name.
+/// One chat event; `name` is a cosmetic display name.
+///
+/// Since 0.12 every event carries its author's peer id (`from`) and an Ed25519
+/// signature (`sig`) by that peer's key, so the author stays provable when the
+/// event is replayed by someone else during history sync. That is what makes
+/// editing and deleting safe without a server: an edit or delete is itself a
+/// signed event (`edits` = target id) and is accepted only from the target's
+/// own author. Older unsigned events are still shown but cannot be edited.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatEvent {
     /// Stable unique id (dedup across re-publish / history sync).
@@ -45,14 +51,124 @@ pub struct ChatEvent {
     /// Optional media: GIF, image or video circle (content-addressed blob).
     #[serde(default)]
     pub attach: Option<Attachment>,
+    /// Author's peer id (base58); empty for legacy/unsigned events.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
+    /// Base64 Ed25519 signature over [`ChatEvent::signing_bytes`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sig: String,
+    /// This event edits (new `body`) or deletes (`deleted`) the event with this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edits: Option<String>,
+    /// Version index of the edited message: 1 = original, 2 = first edit, …
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rev: u32,
+    /// Delete the target (with `edits`), or "this original was deleted" on disk.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl ChatEvent {
     pub fn new(channel: ChannelId, name: impl Into<String>, body: impl Into<String>) -> Self {
         let ts_ms = now_ms();
         let id = format!("{:032x}", rand::random::<u128>());
-        Self { id, channel, name: name.into(), body: body.into(), ts_ms, attach: None }
+        Self { id, channel, name: name.into(), body: body.into(), ts_ms, attach: None, from: String::new(), sig: String::new(), edits: None, rev: 0, deleted: false }
     }
+
+    /// Everything the author vouches for. The channel is left out on purpose:
+    /// a DM is filed under the *other* person's id on each side.
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let a = self.attach.as_ref().map(|a| format!("{}:{}:{}", a.hash, a.size, a.name)).unwrap_or_default();
+        format!(
+            "cybercord/msg/v1\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            self.id,
+            self.from,
+            self.ts_ms,
+            self.name,
+            self.edits.as_deref().unwrap_or(""),
+            self.rev,
+            self.deleted,
+            a,
+            self.body
+        )
+        .into_bytes()
+    }
+
+    /// Set `from` and sign with the local identity.
+    pub fn sign(&mut self, key: &libp2p::identity::Keypair) {
+        use base64::Engine;
+        self.from = key.public().to_peer_id().to_base58();
+        if let Ok(sig) = key.sign(&self.signing_bytes()) {
+            self.sig = base64::engine::general_purpose::STANDARD_NO_PAD.encode(sig);
+        }
+    }
+
+    /// True if `sig` is a valid signature by the key behind `from`.
+    pub fn verify(&self) -> bool {
+        use base64::Engine;
+        let (Some(pk), Ok(sig)) = (public_key_of(&self.from), base64::engine::general_purpose::STANDARD_NO_PAD.decode(&self.sig)) else {
+            return false;
+        };
+        pk.verify(&self.signing_bytes(), &sig)
+    }
+
+    /// Accept or reject an incoming event: signed events must verify; unsigned
+    /// (legacy) events lose any claimed author and may not edit or delete.
+    pub fn admit(&mut self) -> bool {
+        if self.sig.is_empty() {
+            self.from.clear();
+            return self.edits.is_none() && !self.deleted;
+        }
+        self.verify()
+    }
+}
+
+/// The public key embedded in an Ed25519 peer id (identity multihash).
+pub fn public_key_of(peer: &str) -> Option<libp2p::identity::PublicKey> {
+    let id: libp2p::PeerId = peer.parse().ok()?;
+    let bytes = id.to_bytes();
+    if bytes.len() < 3 || bytes[0] != 0x00 || bytes[1] as usize != bytes.len() - 2 {
+        return None;
+    }
+    let pk = libp2p::identity::PublicKey::try_decode_protobuf(&bytes[2..]).ok()?;
+    (pk.to_peer_id() == id).then_some(pk)
+}
+
+/// Local wall-clock time of day, `HH:MM:SS`.
+pub fn clock(ts_ms: u64) -> String {
+    local(ts_ms).map(|t| t.format("%H:%M:%S").to_string()).unwrap_or_else(|| {
+        let secs = ts_ms / 1000;
+        format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+    })
+}
+
+/// Short local date + time for "edited" marks: `21.11 14:35`, or `21.11.2025 14:35`
+/// when it is not this year.
+pub fn short_date(ts_ms: u64) -> String {
+    use chrono::Datelike;
+    let Some(t) = local(ts_ms) else { return clock(ts_ms) };
+    if t.year() == chrono::Local::now().year() {
+        t.format("%d.%m %H:%M").to_string()
+    } else {
+        t.format("%d.%m.%Y %H:%M").to_string()
+    }
+}
+
+fn local(ts_ms: u64) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_millis_opt(ts_ms as i64).single()
+}
+
+/// Subscript digits for version indices: 2 → "₂", 12 → "₁₂".
+pub fn subscript(n: u32) -> String {
+    n.to_string().chars().map(|c| char::from_u32(0x2080 + c.to_digit(10).unwrap_or(0)).unwrap_or(c)).collect()
 }
 
 /// What kind of media an attachment is.
@@ -254,11 +370,6 @@ pub fn now_ms() -> u64 {
 }
 
 /// HH:MM:SS (UTC) from unix millis — small helper shared by UI and logs.
-pub fn clock(ts_ms: u64) -> String {
-    let secs = ts_ms / 1000;
-    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
-}
-
 /// Symmetric gossip topic for a DM between two peers (same string on both sides).
 pub fn dm_topic(a: &str, b: &str) -> String {
     if a <= b { format!("cc/dm/{a}/{b}") } else { format!("cc/dm/{b}/{a}") }
