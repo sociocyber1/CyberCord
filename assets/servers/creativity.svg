@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f8e45c"/><stop offset="1" stop-color="#f5c211"/></linearGradient>
+<linearGradient id="hl" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
+<rect x="4" y="6" width="56" height="54" rx="13" fill="#e5a50a"/>
+<rect x="4" y="4" width="56" height="52" rx="13" fill="url(#g)"/>
+<rect x="4" y="4" width="56" height="52" rx="13" fill="url(#hl)"/>
+<g transform="translate(0,-1)"><g fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M26.5 38 C26.5 33 21 31 21 24.5 a11 11 0 0 1 22 0 C43 31 37.5 33 37.5 38z"/><line x1="27" y1="43" x2="37" y2="43"/><line x1="29" y1="47.5" x2="35" y2="47.5"/></g><g stroke="#fff" stroke-width="2.6" stroke-linecap="round"><line x1="17.00" y1="24.50" x2="13.50" y2="24.50"/><line x1="27.36" y1="10.23" x2="26.28" y2="6.91"/><line x1="44.14" y1="15.68" x2="46.97" y2="13.63"/><line x1="44.14" y1="33.32" x2="46.97" y2="35.37"/><line x1="27.36" y1="38.77" x2="26.28" y2="42.09"/></g></g>
+</svg>

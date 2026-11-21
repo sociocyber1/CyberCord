@@ -1,0 +1,3266 @@
+//! CyberCord desktop GUI (egui/eframe) — white, Adwaita-styled client.
+//!
+//! Palette follows the GNOME HIG: white surfaces (Light 1/2), near-black text
+//! (Dark 4), sky-blue accent (Blue 3) and the brand periwinkle (Blue 1).
+//! Every visible string goes through `self.t(..)` (see `i18n.tsv`).
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use eframe::egui::{self, load::SizedTexture, Align2, Color32, Id, LayerId, Order, Pos2, Rect, RichText, Rounding, Stroke, Vec2};
+
+use cybercord_node::net::{self, Cmd, NetConfig, NetStats, NetworkHandle, UiEvent, MAX_BLOB};
+use cybercord_node::servers::SERVERS;
+use cybercord_node::store::{self, Settings};
+use cybercord_node::types::{clock, now_ms, parse_connect_code, Attachment, ChannelId, ChatEvent, Friend, MediaKind};
+use cybercord_node::voice;
+
+use crate::camera;
+use crate::emoji::{self, EmojiCache, Seg};
+use crate::i18n::{self, Lang};
+use crate::media::{self, MediaCache, Shown};
+use crate::music;
+use crate::voice_rec;
+use crate::theme::{self, p as th};
+
+// Colours come from the active theme: see `theme.rs` and `p()`.
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+
+fn short(id: &str) -> String {
+    if id.chars().count() <= 10 {
+        id.to_string()
+    } else {
+        let c: Vec<char> = id.chars().collect();
+        format!("{}…{}", c[..6].iter().collect::<String>(), c[c.len() - 4..].iter().collect::<String>())
+    }
+}
+
+fn ease_out(x: f32) -> f32 {
+    1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
+}
+
+struct ChannelView {
+    msgs: Vec<ChatEvent>,
+    seen: HashSet<String>,
+}
+struct PeerView {
+    name: Option<String>,
+    connected: bool,
+}
+struct FriendView {
+    name: String,
+    online: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Need {
+    Home,
+    Friends,
+    Chat,
+    Any,
+}
+
+/// One step of the onboarding tour: (title key, body key, anchor, view it needs).
+const TOUR: &[(&str, &str, Option<&str>, Need)] = &[
+    ("t0_t", "t0_b", None, Need::Home),
+    ("t1_t", "t1_b", Some("network"), Need::Home),
+    ("t2_t", "t2_b", Some("rail"), Need::Any),
+    ("t3_t", "t3_b", Some("friends_btn"), Need::Any),
+    ("t4_t", "t4_b", Some("code"), Need::Friends),
+    ("t5_t", "t5_b", Some("composer"), Need::Chat),
+    ("t6_t", "t6_b", Some("media_btns"), Need::Chat),
+    ("t7_t", "t7_b", Some("voice"), Need::Chat),
+    ("t8_t", "t8_b", Some("settings_btn"), Need::Any),
+];
+
+#[derive(Clone, Copy, PartialEq)]
+enum Popup {
+    None,
+    Emoji,
+    Gifs,
+}
+
+pub struct CyberApp {
+    handle: NetworkHandle,
+    self_id: String,
+    self_name: String,
+    show_home: bool,
+    sel_server: usize,
+    sel_channel: usize,
+    views: HashMap<ChannelId, ChannelView>,
+    opened: HashSet<ChannelId>,
+    peers: BTreeMap<String, PeerView>,
+    hub: Option<String>,
+    standby: Option<String>,
+    status: String,
+    input: String,
+    // voice
+    in_voice: Option<String>,
+    mic_on: bool,
+    talkers: HashMap<String, u64>,
+    // friends + network
+    show_friends: bool,
+    friends: BTreeMap<String, FriendView>,
+    dm_open: Option<String>,
+    listen_addrs: Vec<String>,
+    add_code: String,
+    add_name: String,
+    add_msg: String,
+    node_addr: String,
+    net: NetStats,
+    resync: bool,
+    resync_again: Option<Instant>,
+    // language + settings + tour
+    settings: Settings,
+    lang: Lang,
+    show_settings: bool,
+    tour: Option<usize>,
+    tour_changed: Instant,
+    anchors: HashMap<&'static str, Rect>,
+    toast: Option<(String, Instant)>,
+    // media
+    emoji: EmojiCache,
+    media: MediaCache,
+    popup: Popup,
+    popup_rect: Rect,
+    emoji_tab: usize,
+    emoji_query: String,
+    file_path: String,
+    progress: HashMap<String, (u32, u32)>,
+    fetch_asked: HashSet<String>,
+    circle_sound: Option<(String, Instant, Option<voice_rec::Player>)>,
+    // recording a video circle
+    rec: Option<camera::Recorder>,
+    rec_tex: Option<egui::TextureHandle>,
+    rec_error: Option<String>,
+    // icons, voice roster (peer -> (name, room, last seen)), guide page
+    icons: Icons,
+    roster: HashMap<String, (String, Option<String>, u64)>,
+    guide_step: usize,
+    guide_changed: Instant,
+    music: Music,
+    /// Demo/screenshot helper ($CYBERCORD_START=play): start the first track shown.
+    autoplay: bool,
+    // voice message being recorded: recorder, start, level history for the live waveform
+    vm: Option<(voice_rec::MicRecorder, Instant, Vec<f32>)>,
+    vm_last_level: Instant,
+    // Settings → Sound
+    dev_lists: Option<(Vec<String>, Vec<String>)>,
+    monitor: Option<voice_rec::Monitor>,
+    mic_heard: f32,
+    set_tab: SetTab,
+    set_opened: Instant,
+    applied_theme: String,
+    mic_test_msg: Option<&'static str>,
+    test_player: Option<(voice_rec::Player, Instant)>,
+    // network map + people search
+    nodes: Vec<cybercord_node::types::NodeInfo>,
+    search_q: String,
+    search_res: Vec<cybercord_node::types::UserCard>,
+    show_map: bool,
+    map: MapState,
+}
+
+impl CyberApp {
+    pub fn new(cc: &eframe::CreationContext<'_>, cfg: NetConfig) -> Self {
+        let settings = store::load_settings();
+        theme::set(&settings.theme);
+        install_theme(&cc.egui_ctx);
+        let lang = i18n::resolve(&settings.lang);
+        install_fonts(&cc.egui_ctx, lang);
+        let name = cfg.name.clone();
+        let handle = net::spawn(cfg);
+        let tour = if settings.tour_done { None } else { Some(0) };
+        Self {
+            handle,
+            self_id: String::new(),
+            self_name: name,
+            show_home: true,
+            sel_server: 0,
+            sel_channel: 0,
+            views: HashMap::new(),
+            opened: HashSet::new(),
+            peers: BTreeMap::new(),
+            hub: None,
+            standby: None,
+            status: String::new(),
+            input: String::new(),
+            in_voice: None,
+            mic_on: false,
+            talkers: HashMap::new(),
+            show_friends: false,
+            friends: BTreeMap::new(),
+            dm_open: None,
+            listen_addrs: Vec::new(),
+            add_code: String::new(),
+            add_name: String::new(),
+            add_msg: String::new(),
+            node_addr: String::new(),
+            net: NetStats { scanning: true, ..Default::default() },
+            resync: false,
+            resync_again: None,
+            settings,
+            lang,
+            show_settings: false,
+            tour,
+            tour_changed: Instant::now(),
+            anchors: HashMap::new(),
+            toast: None,
+            emoji: EmojiCache::default(),
+            media: MediaCache::default(),
+            popup: Popup::None,
+            popup_rect: Rect::NOTHING,
+            emoji_tab: 0,
+            emoji_query: String::new(),
+            file_path: String::new(),
+            progress: HashMap::new(),
+            fetch_asked: HashSet::new(),
+            circle_sound: None,
+            rec: None,
+            rec_tex: None,
+            rec_error: None,
+            icons: Icons::default(),
+            roster: HashMap::new(),
+            guide_step: 0,
+            guide_changed: Instant::now(),
+            music: Music::default(),
+            autoplay: false,
+            vm: None,
+            vm_last_level: Instant::now(),
+            dev_lists: None,
+            monitor: None,
+            mic_heard: 0.0,
+            set_tab: SetTab::Appearance,
+            set_opened: Instant::now(),
+            applied_theme: String::from("\u{0}"),
+            nodes: Vec::new(),
+            search_q: String::new(),
+            search_res: Vec::new(),
+            show_map: false,
+            map: MapState::default(),
+            mic_test_msg: None,
+            test_player: None,
+        }
+        .with_start_view()
+    }
+
+    /// Optional start view via $CYBERCORD_START, for demos and screenshots:
+    /// "friends", "dm:<peer>", "chat", "tour:<n>", "emoji", "gifs", "rec", "settings".
+    fn with_start_view(mut self) -> Self {
+        if let Ok(v) = std::env::var("CYBERCORD_START") {
+            for part in v.split(',') {
+                match part {
+                    "friends" => {
+                        self.show_home = false;
+                        self.show_friends = true;
+                    }
+                    "chat" => self.show_home = false,
+                    "emoji" => self.popup = Popup::Emoji,
+                    "gifs" => self.popup = Popup::Gifs,
+                    "settings" => self.show_settings = true,
+                    "play" => self.autoplay = true,
+                    "vm" => self.start_voice_message(),
+                    "mictest" => {
+                        self.show_settings = true;
+                        self.set_tab = SetTab::Voice;
+                        self.monitor = voice_rec::Monitor::start();
+                    }
+                    "voicetab" => self.set_tab = SetTab::Voice,
+                    "map" => {
+                        self.show_map = true;
+                        self.show_home = false;
+                    }
+                    p if p.starts_with("find:") => {
+                        self.show_home = false;
+                        self.show_friends = true;
+                        self.search_q = p[5..].to_string();
+                        let _ = self.handle.cmd_tx.send(Cmd::Search(self.search_q.clone()));
+                    }
+                    p if p.starts_with("select:") => self.map.selected = Some(p[7..].to_string()),
+                    p if p.starts_with("theme:") => {
+                        self.settings.theme = p[6..].to_string();
+                        theme::set(&self.settings.theme);
+                    }
+                    "rec" => self.rec = Some(camera::Recorder::start()),
+                    p if p.starts_with("dm:") => {
+                        self.show_home = false;
+                        self.show_friends = true;
+                        self.dm_open = Some(p[3..].to_string());
+                    }
+                    p if p.starts_with("tour:") => {
+                        let n: usize = p[5..].parse().unwrap_or(0);
+                        self.go_tour(n.min(TOUR.len() - 1));
+                    }
+                    p if p.starts_with("notour") => self.tour = None,
+                    p if p.starts_with("voice:") => {
+                        if let Some((g, c)) = p[6..].split_once('/') {
+                            let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::new(g, c) });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self
+    }
+
+    fn t(&self, k: &'static str) -> &'static str {
+        i18n::tr(self.lang, k)
+    }
+
+    fn toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    fn active_channel(&self) -> ChannelId {
+        match (&self.dm_open, self.show_friends) {
+            (Some(p), true) => ChannelId::dm(p.clone()),
+            _ => self.current_channel(),
+        }
+    }
+
+    fn chat_visible(&self) -> bool {
+        !self.show_map && !self.show_home && (!self.show_friends || self.dm_open.is_some())
+    }
+
+    fn friend_name(&self, peer: &str) -> String {
+        self.friends.get(peer).map(|f| f.name.clone()).unwrap_or_else(|| short(peer))
+    }
+
+    fn connect_code(&self) -> String {
+        let mut v: Vec<&String> = self.listen_addrs.iter().collect();
+        v.sort_by_key(|a| a.contains("/127.0.0.1/"));
+        v.into_iter().cloned().collect::<Vec<_>>().join("\n")
+    }
+
+    fn current_channel(&self) -> ChannelId {
+        let s = &SERVERS[self.sel_server];
+        ChannelId::new(s.slug, s.channels[self.sel_channel])
+    }
+
+    fn anchor(&mut self, key: &'static str, rect: Rect) {
+        self.anchors.insert(key, rect);
+    }
+
+    // ------------------------------------------------------------- events
+
+    fn drain_events(&mut self) {
+        while let Ok(ev) = self.handle.event_rx.try_recv() {
+            match ev {
+                UiEvent::Ready { peer_id, name } => {
+                    self.self_id = peer_id;
+                    self.self_name = name;
+                }
+                UiEvent::Listening(a) => {
+                    if !self.listen_addrs.contains(&a) {
+                        self.listen_addrs.push(a);
+                    }
+                }
+                UiEvent::Friend { peer_id, name, online } => {
+                    if online {
+                        self.resync = true;
+                    }
+                    self.friends.insert(peer_id, FriendView { name, online });
+                }
+                UiEvent::Net(n) => self.net = n,
+                UiEvent::BlobProgress { hash, got, total } => {
+                    self.progress.insert(hash, (got, total));
+                }
+                UiEvent::BlobReady { hash } => {
+                    self.progress.remove(&hash);
+                }
+                UiEvent::Status(s) => self.status = s,
+                UiEvent::Chat(ev) => {
+                    let view = self.views.entry(ev.channel.clone()).or_insert_with(|| ChannelView { msgs: Vec::new(), seen: HashSet::new() });
+                    if view.seen.insert(ev.id.clone()) {
+                        view.msgs.push(ev);
+                        view.msgs.sort_by_key(|m| m.ts_ms);
+                    }
+                }
+                UiEvent::Peer { id, name, connected } => {
+                    if connected && !self.peers.get(&id).map(|p| p.connected).unwrap_or(false) {
+                        self.resync = true;
+                    }
+                    let entry = self.peers.entry(id).or_insert(PeerView { name: None, connected: false });
+                    entry.connected = connected;
+                    if name.is_some() {
+                        entry.name = name;
+                    }
+                }
+                UiEvent::Hub { hub, standby } => {
+                    self.hub = hub;
+                    self.standby = standby;
+                }
+                UiEvent::VoiceJoined { room } => {
+                    self.in_voice = room;
+                    if self.in_voice.is_none() {
+                        self.mic_on = false;
+                    }
+                }
+                UiEvent::Nodes(list) => self.nodes = list,
+                UiEvent::Search { query, users } => {
+                    if query == self.search_q.trim() {
+                        self.search_res = users;
+                    }
+                }
+                UiEvent::VoiceRoster { peer, name, room } => {
+                    self.roster.insert(peer, (name, room, now_ms()));
+                }
+                UiEvent::Talking { name } => {
+                    self.talkers.insert(name, now_ms());
+                }
+            }
+        }
+    }
+
+    fn ensure_open(&mut self, ch: &ChannelId) {
+        if self.opened.contains(ch) {
+            return;
+        }
+        self.opened.insert(ch.clone());
+        let recent = store::load_recent(ch, net::HISTORY_ON_OPEN_PUB);
+        let view = self.views.entry(ch.clone()).or_insert_with(|| ChannelView { msgs: Vec::new(), seen: HashSet::new() });
+        for ev in recent {
+            if view.seen.insert(ev.id.clone()) {
+                view.msgs.push(ev);
+            }
+        }
+        view.msgs.sort_by_key(|m| m.ts_ms);
+        let since = view.msgs.last().map(|m| m.ts_ms).unwrap_or(0);
+        let _ = self.handle.cmd_tx.send(Cmd::RequestSync { channel: ch.clone(), since_ms: since });
+    }
+
+    fn role_of(&self, id: &str) -> Option<&'static str> {
+        if self.hub.as_deref() == Some(id) {
+            Some(self.t("role_hub"))
+        } else if self.standby.as_deref() == Some(id) {
+            Some(self.t("role_standby"))
+        } else {
+            None
+        }
+    }
+
+    fn send_current(&mut self) {
+        let body = emoji::shortcodes_to_unicode(self.input.trim());
+        if body.is_empty() {
+            return;
+        }
+        self.input.clear();
+        let ch = self.active_channel();
+        if ch.is_dm() {
+            let _ = self.handle.cmd_tx.send(Cmd::SendDm { peer_id: ch.channel, body });
+        } else {
+            let _ = self.handle.cmd_tx.send(Cmd::SendChat { channel: ch, body });
+        }
+    }
+
+    /// Send a GIF / image file (from a path or dropped bytes) to the open room.
+    fn send_file(&mut self, name: String, bytes: Vec<u8>) {
+        if !self.chat_visible() {
+            self.show_home = false;
+        }
+        let kind = media::sniff(&bytes);
+        match kind {
+            Some(MediaKind::Audio) if bytes.len() <= MAX_BLOB => {
+                // Read tags + length off the UI thread, then send.
+                let channel = self.active_channel();
+                let tx = self.music.tx.clone();
+                std::thread::spawn(move || {
+                    let msg = match music::describe(&bytes, &name) {
+                        Ok((label, dur_ms)) => MusicMsg::Send { channel, name: label, bytes, dur_ms },
+                        Err(_) => MusicMsg::SendFailed,
+                    };
+                    let _ = tx.send(msg);
+                });
+                self.popup = Popup::None;
+            }
+            Some(kind) if bytes.len() <= MAX_BLOB && kind != MediaKind::Circle => {
+                let (w, h) = media::dimensions(&bytes);
+                let channel = self.active_channel();
+                let _ = self.handle.cmd_tx.send(Cmd::SendMedia { channel, body: String::new(), kind, name, bytes, w, h, dur_ms: 0 });
+                self.popup = Popup::None;
+            }
+            _ => {
+                let msg = self.t("file_bad").to_string();
+                self.toast(msg);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- tour
+
+    fn go_tour(&mut self, step: usize) {
+        self.tour = Some(step);
+        self.tour_changed = Instant::now();
+        self.popup = Popup::None;
+        self.show_map = false;
+        match TOUR[step].3 {
+            Need::Home => {
+                self.show_home = true;
+                self.show_friends = false;
+            }
+            Need::Friends => {
+                self.show_home = false;
+                self.show_friends = true;
+                self.dm_open = None;
+            }
+            Need::Chat => {
+                self.show_home = false;
+                self.show_friends = false;
+                self.sel_server = 0;
+                self.sel_channel = 0;
+            }
+            Need::Any => {}
+        }
+    }
+
+    fn end_tour(&mut self) {
+        self.tour = None;
+        self.settings.tour_done = true;
+        store::save_settings(&self.settings);
+        self.show_home = true;
+        self.show_friends = false;
+    }
+
+    fn draw_tour(&mut self, ctx: &egui::Context) {
+        let Some(step) = self.tour else { return };
+        let (title, body, anchor, _) = TOUR[step];
+        let screen = ctx.screen_rect();
+        let target = anchor.and_then(|a| self.anchors.get(a)).copied().map(|r| r.expand(6.0).intersect(screen));
+        let time = ctx.input(|i| i.time) as f32;
+        let age = self.tour_changed.elapsed().as_secs_f32();
+        let k = ease_out(age / 0.35);
+
+        // Dim everything except the highlighted element; eat clicks under the overlay.
+        egui::Area::new(Id::new("tour_block")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            ui.allocate_rect(screen, egui::Sense::click());
+        });
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("tour_dim")));
+        let dim = Color32::from_black_alpha((120.0 * k.min(1.0)) as u8);
+        if let Some(r) = target {
+            painter.rect_filled(Rect::from_min_max(screen.min, egui::pos2(screen.max.x, r.min.y)), 0.0, dim);
+            painter.rect_filled(Rect::from_min_max(egui::pos2(screen.min.x, r.max.y), screen.max), 0.0, dim);
+            painter.rect_filled(Rect::from_min_max(egui::pos2(screen.min.x, r.min.y), egui::pos2(r.min.x, r.max.y)), 0.0, dim);
+            painter.rect_filled(Rect::from_min_max(egui::pos2(r.max.x, r.min.y), egui::pos2(screen.max.x, r.max.y)), 0.0, dim);
+            let pulse = 0.5 + 0.5 * (time * 3.5).sin();
+            painter.rect_stroke(r, Rounding::same(12.0), Stroke::new(2.0 + 2.5 * pulse, th().accent.gamma_multiply(0.55 + 0.45 * pulse)));
+            painter.rect_stroke(r.expand(5.0 + 5.0 * pulse), Rounding::same(16.0), Stroke::new(1.5, th().peri.gamma_multiply(0.6 * (1.0 - pulse))));
+        } else {
+            painter.rect_filled(screen, 0.0, dim);
+        }
+
+        // Card next to the target (right, left, below, above), sliding in.
+        let card_w = 360.0;
+        let card_h = 210.0;
+        let pos = match target {
+            None => screen.center() - egui::vec2(card_w / 2.0, card_h / 2.0),
+            Some(r) => {
+                if r.max.x + 16.0 + card_w < screen.max.x {
+                    egui::pos2(r.max.x + 16.0, (r.center().y - card_h / 2.0).clamp(screen.min.y + 8.0, screen.max.y - card_h - 8.0))
+                } else if r.min.x - 16.0 - card_w > screen.min.x {
+                    egui::pos2(r.min.x - 16.0 - card_w, (r.center().y - card_h / 2.0).clamp(screen.min.y + 8.0, screen.max.y - card_h - 8.0))
+                } else if r.min.y - card_h - 16.0 > screen.min.y {
+                    egui::pos2((r.center().x - card_w / 2.0).clamp(8.0, screen.max.x - card_w - 8.0), r.min.y - card_h - 16.0)
+                } else {
+                    egui::pos2((r.center().x - card_w / 2.0).clamp(8.0, screen.max.x - card_w - 8.0), r.max.y + 16.0)
+                }
+            }
+        };
+        let pos = pos + egui::vec2(0.0, (1.0 - k) * 22.0);
+        let n = TOUR.len();
+        let mut action: Option<i32> = None; // -1 back, +1 next, 0 skip
+        egui::Area::new(Id::new(("tour_card", step))).order(Order::Tooltip).fixed_pos(pos).show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(th().window)
+                .stroke(Stroke::new(1.0, th().line))
+                .rounding(Rounding::same(16.0))
+                .shadow(egui::epaint::Shadow { offset: egui::vec2(0.0, 8.0), blur: 28.0, spread: 0.0, color: Color32::from_black_alpha(60) })
+                .inner_margin(egui::Margin::same(18.0))
+                .show(ui, |ui| {
+                    ui.set_width(card_w - 36.0);
+                    ui.horizontal(|ui| {
+                        // progress dots
+                        for i in 0..n {
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(if i == step { 18.0 } else { 7.0 }, 7.0), egui::Sense::hover());
+                            ui.painter().rect_filled(r, Rounding::same(4.0), if i <= step { th().accent } else { th().line });
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let s = self.t("tour_step").replace("{i}", &(step + 1).to_string()).replace("{n}", &n.to_string());
+                            ui.colored_label(th().ink2, RichText::new(s).small());
+                        });
+                    });
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(self.t(title)).color(th().ink).b().size(19.0));
+                    ui.add_space(4.0);
+                    self.rich_text(ui, self.t(body), th().ink2, 14.0);
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if step > 0 && ui.add(egui::Button::new(RichText::new(self.t("tour_back")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).clicked() {
+                            action = Some(-1);
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let last = step + 1 == n;
+                            let label = if last { self.t("tour_finish") } else { self.t("tour_next") };
+                            if ui.add(egui::Button::new(RichText::new(label).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(96.0, 30.0))).clicked() {
+                                action = Some(1);
+                            }
+                            if !last && ui.add(egui::Button::new(RichText::new(self.t("tour_skip")).color(th().ink2)).frame(false)).clicked() {
+                                action = Some(0);
+                            }
+                        });
+                    });
+                });
+        });
+        match action {
+            Some(1) if step + 1 < n => self.go_tour(step + 1),
+            Some(1) | Some(0) => self.end_tour(),
+            Some(-1) => self.go_tour(step - 1),
+            _ => {}
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.end_tour();
+        }
+        ctx.request_repaint();
+    }
+
+    // ------------------------------------------------------------- text with emoji
+
+    /// Text with color emoji inline (Unicode or :shortcodes:).
+    fn rich_text(&mut self, ui: &mut egui::Ui, text: &str, color: Color32, size: f32) {
+        let segs = emoji::segment(text);
+        let big = emoji::is_emoji_only(&segs);
+        let esize = if big { 40.0 } else { size + 6.0 };
+        let ctx = ui.ctx().clone();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for s in segs {
+                match s {
+                    Seg::Text(t) => {
+                        ui.label(RichText::new(t).color(color).size(size));
+                    }
+                    Seg::Emoji(i) => {
+                        let tex = self.emoji.tex(&ctx, i);
+                        ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(esize, esize))))
+                            .on_hover_text(format!(":{}:", emoji::code(i)));
+                    }
+                }
+            }
+        });
+    }
+}
+
+impl eframe::App for CyberApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drain_events();
+        self.media.poll(ctx);
+        self.poll_music();
+        // theme / zoom changes take effect on the next frame
+        if self.applied_theme != self.settings.theme {
+            self.applied_theme = self.settings.theme.clone();
+            theme::set(&self.settings.theme);
+            install_theme(ctx);
+        }
+        let zoom = (self.settings.ui_scale / 100.0).clamp(0.7, 1.6);
+        if (ctx.zoom_factor() - zoom).abs() > 0.001 && !ctx.input(|i| i.pointer.any_down()) {
+            ctx.set_zoom_factor(zoom);
+        }
+        if self.show_settings {
+            self.settings_screen(ctx);
+            self.draw_toast(ctx);
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
+        } else if self.monitor.is_some() {
+            self.monitor = None;
+        }
+        let ch = self.active_channel();
+        if self.chat_visible() {
+            self.ensure_open(&ch);
+            let again = self.resync_again.map(|t| t.elapsed() > Duration::from_secs(4)).unwrap_or(false);
+            if self.resync || again {
+                self.resync_again = if self.resync { Some(Instant::now()) } else { None };
+                self.resync = false;
+                let since = self.views.get(&ch).and_then(|v| v.msgs.last()).map(|m| m.ts_ms).unwrap_or(0);
+                let _ = self.handle.cmd_tx.send(Cmd::RequestSync { channel: ch.clone(), since_ms: since });
+            }
+        }
+
+        // Files dropped onto the window are sent to the open room.
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        for f in dropped {
+            let bytes = match (&f.bytes, &f.path) {
+                (Some(b), _) => Some(b.to_vec()),
+                (None, Some(p)) => std::fs::read(p).ok(),
+                _ => None,
+            };
+            let name = f.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.name.clone());
+            if let Some(b) = bytes {
+                self.send_file(name, b);
+            }
+        }
+
+        self.rail(ctx);
+        self.channel_column(ctx, &ch);
+        if !self.show_map {
+            self.member_panel(ctx, &ch);
+        }
+        self.bottom_bar(ctx);
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(th().window).inner_margin(egui::Margin::same(16.0)))
+            .show(ctx, |ui| {
+                if self.show_map {
+                    self.map_view(ui);
+                } else if self.show_home {
+                    self.home_view(ui);
+                } else if self.show_friends && self.dm_open.is_none() {
+                    self.friends_home(ui);
+                } else {
+                    self.chat_view(ui, &ch);
+                }
+            });
+
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("drop")));
+            let r = ctx.screen_rect().shrink(24.0);
+            painter.rect_filled(r, Rounding::same(18.0), th().peri.gamma_multiply(0.35));
+            painter.rect_stroke(r, Rounding::same(18.0), Stroke::new(3.0, th().accent));
+            painter.text(r.center(), Align2::CENTER_CENTER, self.t("drop_here"), egui::FontId::proportional(28.0), th().accent);
+        }
+
+        self.popups(ctx);
+        self.recorder_overlay(ctx);
+        self.draw_toast(ctx);
+        self.draw_tour(ctx);
+
+        ctx.request_repaint_after(Duration::from_millis(100));
+    }
+}
+
+impl CyberApp {
+    // ------------------------------------------------------------- panels
+
+    fn rail(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("rail")
+            .exact_width(72.0)
+            .resizable(false)
+            .frame(egui::Frame::none().fill(th().rail).inner_margin(egui::Margin::symmetric(10.0, 12.0)))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        let home = self.icons.get(ui.ctx(), "app", APP_ICON);
+                        let r = rail_tile(ui, home, self.show_home && !self.show_map, None).on_hover_text(self.t("home_tip"));
+                        if r.clicked() {
+                            self.show_home = true;
+                            self.show_friends = false;
+                            self.show_map = false;
+                        }
+                        ui.add_space(8.0);
+                        let fr_on = self.show_friends && !self.show_home && !self.show_map;
+                        let online = self.friends.values().filter(|f| f.online).count();
+                        let tex = self.icons.get(ui.ctx(), "friends", FRIENDS_TILE);
+                        let badge = if online > 0 { Some(online) } else { None };
+                        let fr = rail_tile(ui, tex, fr_on, badge).on_hover_text(self.t("friends_tip").replace("{n}", &online.to_string()));
+                        self.anchor("friends_btn", fr.rect);
+                        if fr.clicked() {
+                            self.show_friends = true;
+                            self.show_home = false;
+                            self.show_map = false;
+                        }
+                        ui.add_space(8.0);
+                        let tex = self.icons.get(ui.ctx(), "network", NETWORK_TILE);
+                        let online = self.nodes.iter().filter(|n| n.online && n.name.is_some()).count();
+                        let nm = rail_tile(ui, tex, self.show_map, (online > 0).then_some(online)).on_hover_text(self.t("map_tip"));
+                        self.anchor("map_btn", nm.rect);
+                        if nm.clicked() {
+                            self.show_map = true;
+                            self.show_home = false;
+                            self.show_friends = false;
+                        }
+                        ui.add_space(8.0);
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(32.0, 2.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, Rounding::same(1.0), th().line);
+                        ui.add_space(8.0);
+                        let top = ui.cursor().min;
+                        for (i, s) in SERVERS.iter().enumerate() {
+                            let selected = !self.show_home && !self.show_friends && !self.show_map && i == self.sel_server;
+                            let tex = self.icons.get(ui.ctx(), s.slug, s.icon);
+                            let in_voice_here = self.in_voice.as_deref().map(|r| r.starts_with(&format!("{}/", s.slug))).unwrap_or(false);
+                            let r = rail_tile(ui, tex, selected, None).on_hover_text(s.name);
+                            if in_voice_here {
+                                let c = r.rect.right_bottom() - egui::vec2(6.0, 6.0);
+                                ui.painter().circle_filled(c, 8.0, th().rail);
+                                let spk = self.icons.get(ui.ctx(), "speaker", SYM_SPEAKER);
+                                ui.painter().image(spk, Rect::from_center_size(c, egui::vec2(11.0, 11.0)), Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), th().green);
+                            }
+                            if r.clicked() {
+                                self.sel_server = i;
+                                self.sel_channel = 0;
+                                self.show_home = false;
+                                self.show_friends = false;
+                                self.show_map = false;
+                            }
+                            ui.add_space(8.0);
+                        }
+                        let bottom = ui.cursor().min;
+                        self.anchor("rail", Rect::from_min_max(egui::pos2(top.x - 4.0, top.y - 4.0), egui::pos2(top.x + 56.0, bottom.y)));
+                    });
+                });
+            });
+    }
+
+    fn channel_column(&mut self, ctx: &egui::Context, _ch: &ChannelId) {
+        let server = &SERVERS[self.sel_server];
+        egui::SidePanel::left("channels")
+            .exact_width(236.0)
+            .resizable(false)
+            .frame(egui::Frame::none().fill(th().surface).inner_margin(egui::Margin::same(12.0)))
+            .show(ctx, |ui| {
+                // bottom: "voice connected" box + user panel with settings (Discord-like)
+                egui::TopBottomPanel::bottom("me").frame(egui::Frame::none().fill(th().surface)).show_separator_line(false).show_inside(ui, |ui| {
+                    self.voice_box(ui);
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let initial = self.self_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                        avatar(ui, &initial, 16.0, th().accent, if self.mic_on && self.in_voice.is_some() { Some(th().green) } else { None });
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&self.self_name).color(th().ink).b());
+                            ui.colored_label(th().ink2, RichText::new(short(&self.self_id)).small());
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let gear = self.icons.get(ui.ctx(), "gear", SYM_GEAR);
+                            let g = icon_button(ui, gear, th().ink2, th().card, 34.0).on_hover_text(self.t("settings"));
+                            self.anchor("settings_btn", g.rect);
+                            if g.clicked() {
+                                self.show_settings = true;
+                                self.set_opened = Instant::now();
+                            }
+                        });
+                    });
+                    ui.add_space(2.0);
+                });
+                if self.show_friends {
+                    self.friends_column(ui);
+                    return;
+                }
+                ui.horizontal(|ui| {
+                    let tex = self.icons.get(ui.ctx(), server.slug, server.icon);
+                    ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(28.0, 28.0))));
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(server.name).color(th().ink).b().size(15.5));
+                        ui.colored_label(th().ink2, RichText::new(self.t("server_label")).small());
+                    });
+                });
+                ui.add_space(6.0);
+                sep(ui);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    section_label(ui, self.t("text_channels"));
+                    let hash = self.icons.get(ui.ctx(), "hash", SYM_HASH);
+                    for (i, c) in server.channels.iter().enumerate() {
+                        let selected = !self.show_home && !self.show_friends && i == self.sel_channel;
+                        if channel_row(ui, hash, c, selected, false).clicked() {
+                            self.sel_channel = i;
+                            self.show_home = false;
+                        }
+                    }
+                    ui.add_space(10.0);
+                    let top = ui.cursor().min;
+                    section_label(ui, self.t("voice_channels"));
+                    let spk = self.icons.get(ui.ctx(), "speaker", SYM_SPEAKER);
+                    let now = now_ms();
+                    for v in server.voice.iter() {
+                        let room = format!("{}/{}", server.slug, v);
+                        let mine = self.in_voice.as_deref() == Some(room.as_str());
+                        let r = channel_row(ui, spk, v, mine, true).on_hover_text(self.t("voice_join_tip"));
+                        if r.clicked() && !mine {
+                            let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::new(server.slug, *v) });
+                        }
+                        // who is in this room (from heartbeats) — like Discord's list under a voice channel
+                        let mut people: Vec<(String, bool)> = self
+                            .roster
+                            .iter()
+                            .filter(|(p, (_, r, seen))| r.as_deref() == Some(room.as_str()) && **p != self.self_id && now.saturating_sub(*seen) < 20_000)
+                            .map(|(_, (n, _, _))| (n.clone(), self.talkers.get(n).map(|t| now.saturating_sub(*t) < 900).unwrap_or(false)))
+                            .collect();
+                        if mine {
+                            people.insert(0, (self.self_name.clone(), self.mic_on && self.talkers.get(&self.self_name).map(|t| now.saturating_sub(*t) < 900).unwrap_or(false)));
+                        }
+                        for (name, talking) in people {
+                            ui.horizontal(|ui| {
+                                ui.add_space(26.0);
+                                let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                                avatar(ui, &initial, 10.0, name_color(&name), if talking { Some(th().green) } else { None });
+                                ui.label(RichText::new(&name).color(th().ink).size(13.5));
+                            });
+                        }
+                    }
+                    let bottom = ui.cursor().min;
+                    self.anchor("voice", Rect::from_min_max(top - egui::vec2(4.0, 4.0), egui::pos2(top.x + ui.available_width() + 4.0, bottom.y + 2.0)));
+                });
+            });
+    }
+
+    /// "Voice connected" box above the user panel: room, mic toggle, hang up.
+    fn voice_box(&mut self, ui: &mut egui::Ui) {
+        if !voice::AUDIO_ENABLED {
+            ui.colored_label(th().ink2, RichText::new(self.t("audio_off")).small().italics());
+            ui.add_space(4.0);
+        }
+        let Some(room) = self.in_voice.clone() else { return };
+        egui::Frame::none().fill(th().window).stroke(Stroke::new(1.0, th().line)).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::symmetric(10.0, 8.0)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(self.t("voice_connected")).color(th().green_text).b().size(13.5));
+                    let shown = match room.split_once('/') {
+                        Some((g, c)) if g.starts_with("dm") || c.len() > 40 => self.friend_name(c),
+                        Some((_, c)) => c.to_string(),
+                        None => room.clone(),
+                    };
+                    ui.colored_label(th().ink2, RichText::new(shown).small());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let hang = self.icons.get(ui.ctx(), "hangup", SYM_HANGUP);
+                    if icon_button(ui, hang, th().on_accent, th().red, 32.0).on_hover_text(self.t("leave_tip")).clicked() {
+                        let _ = self.handle.cmd_tx.send(Cmd::LeaveVoice);
+                    }
+                    let (tex, fg, bg) = if self.mic_on {
+                        (self.icons.get(ui.ctx(), "mic", SYM_MIC), th().on_accent, th().green)
+                    } else {
+                        (self.icons.get(ui.ctx(), "mic-off", SYM_MIC_OFF), th().ink2, th().card)
+                    };
+                    let tip = format!("{} — {}", self.t("mic_tip"), if self.mic_on { self.t("mic_on") } else { self.t("mic_off") });
+                    if icon_button(ui, tex, fg, bg, 32.0).on_hover_text(tip).clicked() {
+                        self.mic_on = !self.mic_on;
+                        let _ = self.handle.cmd_tx.send(Cmd::SetMic(self.mic_on));
+                    }
+                });
+            });
+        });
+    }
+
+    fn member_panel(&mut self, ctx: &egui::Context, _ch: &ChannelId) {
+        egui::SidePanel::right("members")
+            .exact_width(210.0)
+            .resizable(false)
+            .frame(egui::Frame::none().fill(th().surface).inner_margin(egui::Margin::same(12.0)))
+            .show(ctx, |ui| {
+                section_label(ui, self.t("members_h"));
+                let now = now_ms();
+                let me = format!("{} {}", self.self_name, self.t("you"));
+                let my_role = self.role_of(&self.self_id);
+                let spk = self.icons.get(ui.ctx(), "speaker", SYM_SPEAKER);
+                member_row(ui, &me, my_role, true, false, self.in_voice.is_some().then_some(spk));
+                let rows: Vec<(String, Option<&'static str>, bool, bool, bool)> = self
+                    .peers
+                    .iter()
+                    .filter(|(id, _)| **id != self.self_id)
+                    .map(|(id, pv)| {
+                        let name = pv.name.clone().unwrap_or_else(|| short(id));
+                        let talking = self.talkers.get(&name).map(|t| now.saturating_sub(*t) < 900).unwrap_or(false);
+                        let in_voice = self.roster.get(id).map(|(_, r, seen)| r.is_some() && now.saturating_sub(*seen) < 20_000).unwrap_or(false);
+                        (name, self.role_of(id), pv.connected, talking, in_voice)
+                    })
+                    .collect();
+                for (name, role, conn, talking, in_voice) in rows {
+                    member_row(ui, &name, role, conn, talking, in_voice.then_some(spk));
+                }
+            });
+    }
+
+    fn bottom_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("bar")
+            .exact_height(30.0)
+            .frame(egui::Frame::none().fill(th().surface).inner_margin(egui::Margin::symmetric(12.0, 5.0)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let tex = self.icons.get(ui.ctx(), "app", APP_ICON);
+                    ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(16.0, 16.0))));
+                    ui.label(RichText::new("SocioCyberneering").color(th().ink).b().small());
+                    ui.colored_label(th().ink2, RichText::new("Inc.").small());
+                    ui.separator();
+                    let hub = self.hub.as_deref().map(short).unwrap_or_else(|| "—".into());
+                    ui.colored_label(th().ink2, RichText::new(format!("{}: {hub}", self.t("hub_label"))).small());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (txt, col) = if self.net.scanning {
+                            (self.t("scanning_bar").replace("{n}", &self.net.known.to_string()), th().accent)
+                        } else {
+                            (
+                                self.t("p2p_bar").replace("{c}", &self.net.connected.to_string()).replace("{k}", &self.net.known.to_string()),
+                                th().green_text,
+                            )
+                        };
+                        ui.colored_label(col, RichText::new(txt).small());
+                    });
+                });
+            });
+    }
+
+    fn friends_column(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new(self.t("friends")).color(th().ink).b().size(16.0));
+        let online = self.friends.values().filter(|f| f.online).count();
+        ui.colored_label(th().ink2, self.t("friends_count").replace("{o}", &online.to_string()).replace("{t}", &self.friends.len().to_string()));
+        ui.add_space(6.0);
+        let add_sel = self.dm_open.is_none();
+        if ui.selectable_label(add_sel, RichText::new(self.t("add_friend_link")).color(if add_sel { th().ink } else { th().accent })).clicked() {
+            self.dm_open = None;
+        }
+        ui.add_space(4.0);
+        sep(ui);
+        if self.friends.is_empty() {
+            ui.colored_label(th().ink2, self.t("no_friends"));
+        }
+        let mut list: Vec<(String, String, bool)> = self.friends.iter().map(|(p, f)| (p.clone(), f.name.clone(), f.online)).collect();
+        list.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+        for (peer, name, on) in list {
+            let selected = self.dm_open.as_deref() == Some(peer.as_str());
+            ui.horizontal(|ui| {
+                dot(ui, if on { th().green } else { th().line });
+                if ui.selectable_label(selected, RichText::new(&name).color(if on { th().ink } else { th().ink2 })).clicked() {
+                    self.dm_open = Some(peer.clone());
+                }
+            });
+        }
+    }
+
+    // ------------------------------------------------------------- central views
+
+    fn friends_home(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.label(RichText::new(self.t("friends")).color(th().ink).b().size(24.0));
+            ui.colored_label(th().ink2, self.t("friends_sub"));
+            ui.add_space(12.0);
+            card(ui, self.t("find_people"), |ui| {
+                self.people_search(ui, false);
+            });
+            ui.add_space(10.0);
+
+            let code = self.connect_code();
+            let r = card(ui, self.t("your_code"), |ui| {
+                ui.colored_label(th().ink2, self.t("your_code_body"));
+                ui.add_space(6.0);
+                let mut shown = if code.is_empty() { self.t("starting").to_string() } else { code.clone() };
+                ui.add(egui::TextEdit::multiline(&mut shown).font(egui::TextStyle::Monospace).desired_rows(3).desired_width(f32::INFINITY));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(RichText::new(self.t("copy_code")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
+                        ui.output_mut(|o| o.copied_text = code.clone());
+                        let m = self.t("code_copied").to_string();
+                        self.toast(m);
+                    }
+                    if ui.add(egui::Button::new(RichText::new(self.t("copy_id")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).on_hover_text(self.t("your_id_body")).clicked() {
+                        ui.output_mut(|o| o.copied_text = self.self_id.clone());
+                        let m = self.t("id_copied").to_string();
+                        self.toast(m);
+                    }
+                    ui.colored_label(th().ink2, RichText::new(format!("{}: {}", self.t("your_id"), short(&self.self_id))).monospace().small());
+                });
+            });
+            self.anchor("code", r);
+            ui.add_space(10.0);
+
+            card(ui, self.t("add_a_friend"), |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(th().ink2, self.t("name"));
+                    let hint = self.t("name_hint");
+                    ui.add(egui::TextEdit::singleline(&mut self.add_name).hint_text(hint).desired_width(220.0));
+                });
+                ui.add_space(4.0);
+                ui.colored_label(th().ink2, self.t("their_code"));
+                ui.add(egui::TextEdit::multiline(&mut self.add_code).font(egui::TextStyle::Monospace).hint_text("12D3Koo…   /ip4/…/p2p/12D3Koo…").desired_rows(3).desired_width(f32::INFINITY));
+                ui.add_space(6.0);
+                if ui.add(egui::Button::new(RichText::new(self.t("add_btn")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
+                    match parse_connect_code(&self.add_code) {
+                        Some((peer_id, _)) if peer_id == self.self_id => self.add_msg = self.t("own_code").to_string(),
+                        Some((peer_id, addrs)) => {
+                            let name = if self.add_name.trim().is_empty() { short(&peer_id) } else { self.add_name.trim().to_string() };
+                            let _ = self.handle.cmd_tx.send(Cmd::AddFriend(Friend { peer_id: peer_id.clone(), name: name.clone(), addrs }));
+                            self.friends.entry(peer_id.clone()).or_insert(FriendView { name: name.clone(), online: false });
+                            self.add_msg = self.t("added").replace("{name}", &name);
+                            self.add_code.clear();
+                            self.add_name.clear();
+                            self.dm_open = Some(peer_id);
+                        }
+                        None => self.add_msg = self.t("bad_code").to_string(),
+                    }
+                }
+                if !self.add_msg.is_empty() {
+                    ui.add_space(4.0);
+                    ui.colored_label(th().accent, &self.add_msg);
+                }
+            });
+            ui.add_space(10.0);
+            self.network_card(ui, false);
+        });
+    }
+
+    fn network_card(&mut self, ui: &mut egui::Ui, record_anchor: bool) {
+        let n = self.net.clone();
+        let r = card(ui, self.t("net_title"), |ui| {
+            ui.horizontal(|ui| {
+                dot(ui, if n.scanning { th().accent } else { th().green });
+                let head = if n.scanning { self.t("net_scanning").to_string() } else { self.t("net_connected").replace("{n}", &n.connected.to_string()) };
+                ui.label(RichText::new(head).color(th().ink).b());
+            });
+            ui.add_space(4.0);
+            let reach = match n.reachable {
+                Some(true) => self.t("reach_yes"),
+                Some(false) => self.t("reach_no"),
+                None => self.t("reach_unknown"),
+            };
+            ui.colored_label(
+                th().ink2,
+                self.t("net_stats").replace("{k}", &n.known.to_string()).replace("{r}", &n.relays.to_string()).replace("{f}", &n.relaying_for.to_string()),
+            );
+            ui.colored_label(th().ink2, reach);
+            if !n.sources.is_empty() {
+                ui.colored_label(th().ink2, self.t("found_via").replace("{s}", &n.sources));
+            }
+            if !self.status.is_empty() {
+                ui.colored_label(th().accent, RichText::new(self.t("last").replace("{s}", &self.status)).small());
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(RichText::new(self.t("scan_now")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
+                    let _ = self.handle.cmd_tx.send(Cmd::Rescan);
+                }
+                if ui.add(egui::Button::new(RichText::new(self.t("map_open")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).clicked() {
+                    self.show_map = true;
+                    self.show_home = false;
+                    self.show_friends = false;
+                }
+            });
+            ui.add_space(8.0);
+            egui::CollapsingHeader::new(RichText::new(self.t("how_finds")).color(th().ink).b()).default_open(false).show(ui, |ui| {
+                for k in ["how_lan", "how_saved", "how_friends", "how_pex", "how_dht", "how_nat"] {
+                    bullet(ui, self.t(k));
+                }
+                ui.add_space(4.0);
+                ui.colored_label(th().ink2, self.t("only_announced"));
+                ui.add_space(8.0);
+                ui.colored_label(th().ink2, self.t("connect_node"));
+                ui.add(egui::TextEdit::singleline(&mut self.node_addr).font(egui::TextStyle::Monospace).hint_text("/ip4/…/udp/47100/quic-v1/p2p/12D3Koo…").desired_width(f32::INFINITY));
+                if ui.add(egui::Button::new(RichText::new(self.t("connect")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).clicked() {
+                    let _ = self.handle.cmd_tx.send(Cmd::AddNode(self.node_addr.trim().to_string()));
+                }
+            });
+        });
+        if record_anchor {
+            self.anchor("network", r);
+        }
+    }
+
+    fn home_view(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.label(RichText::new(self.t("welcome")).color(th().ink).b().size(26.0));
+            ui.colored_label(th().ink2, self.t("tagline"));
+            ui.add_space(14.0);
+            self.guide_card(ui);
+            ui.add_space(10.0);
+            self.network_card(ui, true);
+            ui.add_space(10.0);
+            card(ui, self.t("good_to_know"), |ui| {
+                bullet(ui, self.t("gk1"));
+                bullet(ui, self.t("gk2"));
+                bullet(ui, self.t("gk3"));
+            });
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(RichText::new(self.t("open_welcome")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(160.0, 34.0))).clicked() {
+                    self.show_home = false;
+                    self.sel_server = 0;
+                    self.sel_channel = 0;
+                }
+                if ui.add(egui::Button::new(RichText::new(self.t("show_tour")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0)).min_size(egui::vec2(160.0, 34.0))).clicked() {
+                    self.go_tour(0);
+                }
+            });
+            ui.add_space(12.0);
+        });
+    }
+
+    /// Step-by-step guide: GNOME-style picture + caption, with arrows and dots.
+    fn guide_card(&mut self, ui: &mut egui::Ui) {
+        let n = GUIDE.len();
+        let i = self.guide_step.min(n - 1);
+        let (key, png, h, b) = GUIDE[i];
+        let k = ease_out(self.guide_changed.elapsed().as_secs_f32() / 0.3);
+        let mut go: Option<usize> = None;
+        card(ui, self.t("guide_title"), |ui| {
+            let w = ui.available_width().min(560.0);
+            let tex = self.icons.get(ui.ctx(), key, png);
+            let size = egui::vec2(w, w * 300.0 / 480.0);
+            let (r, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+            let shift = (1.0 - k) * 24.0;
+            ui.painter().image(tex, r.translate(egui::vec2(shift, 0.0)), Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE.gamma_multiply(k.max(0.05)));
+            if resp.clicked() {
+                go = Some((i + 1) % n);
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{}", i + 1)).color(th().on_accent).b().background_color(th().accent));
+                ui.label(RichText::new(self.t(h)).color(th().ink).b().size(17.0));
+            });
+            ui.add_space(2.0);
+            ui.label(RichText::new(self.t(b)).color(th().ink2));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(i > 0, egui::Button::new(RichText::new(self.t("guide_prev")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).clicked() {
+                    go = Some(i - 1);
+                }
+                ui.add_space(8.0);
+                for d in 0..n {
+                    let (dr, dresp) = ui.allocate_exact_size(egui::vec2(if d == i { 20.0 } else { 8.0 }, 8.0), egui::Sense::click());
+                    ui.painter().rect_filled(dr, Rounding::same(4.0), if d == i { th().accent } else { th().line });
+                    if dresp.clicked() {
+                        go = Some(d);
+                    }
+                }
+                ui.add_space(8.0);
+                if ui.add_enabled(i + 1 < n, egui::Button::new(RichText::new(self.t("guide_next")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
+                    go = Some(i + 1);
+                }
+            });
+        });
+        if let Some(g) = go {
+            self.guide_step = g;
+            self.guide_changed = Instant::now();
+        }
+        if k < 1.0 {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn chat_view(&mut self, ui: &mut egui::Ui, ch: &ChannelId) {
+        ui.horizontal(|ui| {
+            if ch.is_dm() {
+                let online = self.friends.get(&ch.channel).map(|f| f.online).unwrap_or(false);
+                dot(ui, if online { th().green } else { th().line });
+                ui.label(RichText::new(format!("@  {}", self.friend_name(&ch.channel))).color(th().ink).b().size(17.0));
+                ui.colored_label(th().ink2, format!("· {}", if online { self.t("dm_online") } else { self.t("dm_offline") }));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let in_this = self.in_voice.as_deref().map(|r| r.ends_with(&ch.channel)).unwrap_or(false);
+                    if !in_this {
+                        let tex = self.icons.get(ui.ctx(), "headphones", SYM_HEADPHONES);
+                        let btn = egui::Button::image_and_text(egui::Image::new(SizedTexture::new(tex, egui::vec2(16.0, 16.0))).tint(th().on_accent), RichText::new(self.t("call_btn")).color(th().on_accent).b())
+                            .fill(th().green)
+                            .rounding(Rounding::same(8.0));
+                        if ui.add(btn).on_hover_text(self.t("call").replace("{name}", &self.friend_name(&ch.channel))).clicked() {
+                            let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ch.clone() });
+                        }
+                    }
+                });
+            } else {
+                let hash = self.icons.get(ui.ctx(), "hash", SYM_HASH);
+                ui.add(egui::Image::new(SizedTexture::new(hash, egui::vec2(18.0, 18.0))).tint(th().ink2));
+                ui.label(RichText::new(ch.channel.as_str()).color(th().ink).b().size(17.0));
+                ui.colored_label(th().ink2, format!("· {}", SERVERS[self.sel_server].name));
+            }
+        });
+        ui.add_space(4.0);
+        sep(ui);
+
+        let input_h = 50.0;
+        let avail = ui.available_height() - input_h;
+        let msgs: Vec<ChatEvent> = self.views.get(ch).map(|v| v.msgs.clone()).unwrap_or_default();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(avail).stick_to_bottom(true).show(ui, |ui| {
+            if msgs.is_empty() {
+                ui.add_space(8.0);
+                ui.colored_label(th().ink2, self.t("no_messages"));
+            }
+            for m in &msgs {
+                let mine = m.name == self.self_name;
+                ui.horizontal(|ui| {
+                    ui.colored_label(th().ink2, RichText::new(clock(m.ts_ms)).small());
+                    ui.label(RichText::new(&m.name).color(if mine { th().accent } else { th().ink }).b());
+                });
+                ui.indent(&m.id, |ui| {
+                    if !m.body.is_empty() {
+                        self.rich_text(ui, &m.body, th().ink, 14.0);
+                    }
+                    if let Some(a) = &m.attach {
+                        self.media_widget(ui, a, ch);
+                    }
+                });
+                ui.add_space(6.0);
+            }
+        });
+
+        ui.add_space(4.0);
+        sep(ui);
+        if self.vm.is_some() {
+            let row = ui.horizontal(|ui| self.voice_message_bar(ui, ch));
+            self.anchor("composer", row.response.rect.expand(2.0));
+            return;
+        }
+        let row = ui.horizontal(|ui| {
+            let btns = ui.horizontal(|ui| {
+                let e_idx = emoji::find_code("slight_smile").unwrap_or(0);
+                let tex = self.emoji.tex(ui.ctx(), e_idx);
+                let e = ui.add(egui::ImageButton::new(SizedTexture::new(tex, egui::vec2(22.0, 22.0))).frame(false)).on_hover_text(self.t("emoji_tip"));
+                if e.clicked() {
+                    self.popup = if self.popup == Popup::Emoji { Popup::None } else { Popup::Emoji };
+                }
+                let g = ui.add(egui::Button::new(RichText::new("GIF").b().size(12.0).color(th().accent)).fill(th().window).stroke(Stroke::new(1.5, th().accent)).rounding(Rounding::same(6.0)))
+                    .on_hover_text(self.t("gif_tip"));
+                if g.clicked() {
+                    self.popup = if self.popup == Popup::Gifs { Popup::None } else { Popup::Gifs };
+                }
+                // round "record a circle" button
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+                let hovered = resp.hovered();
+                ui.painter().circle_stroke(r.center(), 11.0, Stroke::new(2.0, if hovered { th().accent } else { th().ink2 }));
+                ui.painter().circle_filled(r.center(), 5.0, if hovered { th().red } else { th().ink2 });
+                if resp.on_hover_text(self.t("circle_tip")).clicked() {
+                    self.start_recording();
+                }
+                // voice message
+                let mic = self.icons.get(ui.ctx(), "mic", SYM_MIC);
+                if icon_button(ui, mic, th().ink2, th().window, 30.0).on_hover_text(self.t("vm_tip")).clicked() {
+                    self.start_voice_message();
+                }
+            });
+            self.anchor("media_btns", btns.response.rect.expand(2.0));
+            let hint = if ch.is_dm() {
+                self.t("message_dm").replace("{name}", &self.friend_name(&ch.channel))
+            } else {
+                self.t("message_ch").replace("{ch}", &ch.channel)
+            };
+            let resp = ui.add_sized([ui.available_width() - 118.0, 32.0], egui::TextEdit::singleline(&mut self.input).hint_text(hint));
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.add(egui::Button::new(RichText::new(self.t("send")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(80.0, 32.0))).clicked() || enter {
+                self.send_current();
+                resp.request_focus();
+            }
+        });
+        self.anchor("composer", row.response.rect.expand(2.0));
+    }
+
+    // ------------------------------------------------------------- media in chat
+
+    fn media_widget(&mut self, ui: &mut egui::Ui, a: &Attachment, ch: &ChannelId) {
+        if a.kind == MediaKind::Audio && store::has_blob(&a.hash) {
+            self.music_widget(ui, a);
+            return;
+        }
+        let time = ui.input(|i| i.time);
+        enum Draw {
+            Still(egui::TextureId, Vec2),
+            Frame(egui::TextureId, Vec2, u32),
+            Circle(Vec<egui::TextureId>, u32, Option<(u32, Vec<i16>)>),
+            Waiting,
+            Failed,
+        }
+        let draw = match self.media.get(&a.hash, a.kind) {
+            Ok(Some(Shown::Still { tex, size })) => Draw::Still(tex.id(), *size),
+            Ok(Some(Shown::Anim { frames, total_ms, size })) => {
+                let mut t = ((time * 1000.0) as u64 % *total_ms as u64) as u32;
+                let mut pick = (frames[0].0.id(), frames[0].1);
+                for (tex, ms) in frames.iter() {
+                    if t < *ms {
+                        pick = (tex.id(), *ms);
+                        break;
+                    }
+                    t -= ms;
+                }
+                Draw::Frame(pick.0, *size, pick.1)
+            }
+            Ok(Some(Shown::Circle { frames, fps, audio })) => Draw::Circle(frames.iter().map(|f| f.id()).collect(), *fps, audio.clone()),
+            Ok(None) => Draw::Waiting,
+            Err(()) => Draw::Failed,
+        };
+        let fit = |s: Vec2, max: Vec2| -> Vec2 {
+            let k = (max.x / s.x).min(max.y / s.y).min(1.0);
+            s * k
+        };
+        match draw {
+            Draw::Still(tex, size) | Draw::Frame(tex, size, _) => {
+                let sz = fit(size, egui::vec2(320.0, 260.0));
+                ui.horizontal(|ui| {
+                    ui.add(egui::Image::new(SizedTexture::new(tex, sz)).rounding(Rounding::same(10.0)));
+                    if a.kind == MediaKind::Gif {
+                        let saved = self.settings.gifs.contains(&a.hash);
+                        let label = if saved { format!("★ {}", self.t("saved_gif")) } else { "☆".to_string() };
+                        if ui.add(egui::Button::new(RichText::new(label).color(if saved { th().accent } else { th().ink2 })).frame(false)).on_hover_text(self.t("save_gif")).clicked() && !saved {
+                            self.settings.gifs.insert(0, a.hash.clone());
+                            store::save_settings(&self.settings);
+                        }
+                    }
+                });
+                if let Draw::Frame(_, _, ms) = draw {
+                    ui.ctx().request_repaint_after(Duration::from_millis(ms.min(100) as u64));
+                }
+            }
+            Draw::Circle(frames, fps, audio) => self.circle_widget(ui, a, &frames, fps, audio, time),
+            Draw::Waiting => {
+                if self.fetch_asked.insert(a.hash.clone()) {
+                    let _ = self.handle.cmd_tx.send(Cmd::FetchBlob { channel: ch.clone(), hash: a.hash.clone() });
+                }
+                let text = match self.progress.get(&a.hash) {
+                    Some((got, total)) => self.t("loading_media").replace("{p}", &((*got * 100) / (*total).max(1)).to_string()),
+                    None => self.t("media_wait").to_string(),
+                };
+                let size = match a.kind {
+                    MediaKind::Circle => egui::vec2(200.0, 200.0),
+                    MediaKind::Audio => egui::vec2(400.0, 64.0),
+                    _ => egui::vec2(220.0, 120.0),
+                };
+                let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                if a.kind == MediaKind::Circle {
+                    ui.painter().circle_filled(r.center(), 100.0, th().card);
+                } else {
+                    ui.painter().rect_filled(r, Rounding::same(10.0), th().card);
+                }
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), th().ink2);
+            }
+            Draw::Failed => {
+                ui.colored_label(th().ink2, format!("⚠ {}", a.name));
+            }
+        }
+    }
+
+    fn circle_widget(&mut self, ui: &mut egui::Ui, a: &Attachment, frames: &[egui::TextureId], fps: u32, audio: Option<(u32, Vec<i16>)>, time: f64) {
+        let n = frames.len().max(1);
+        let dur = n as f64 / fps.max(1) as f64;
+        let playing = self.circle_sound.as_ref().filter(|(h, _, _)| *h == a.hash).map(|(_, t, _)| t.elapsed().as_secs_f64());
+        let pos = match playing {
+            Some(p) if p < dur => p,
+            Some(_) => {
+                self.circle_sound = None; // finished
+                time % dur
+            }
+            None => time % dur, // muted autoplay loop, like Telegram
+        };
+        let idx = ((pos * fps as f64) as usize).min(n - 1);
+        let (r, resp) = ui.allocate_exact_size(egui::vec2(208.0, 208.0), egui::Sense::click());
+        let c = r.center();
+        let p = ui.painter();
+        p.circle_filled(c, 103.0, th().card);
+        media::paint_circle(p, c, 98.0, frames[idx], false);
+        media::progress_ring(p, c, 101.0, (pos / dur) as f32, if playing.is_some() { th().accent } else { th().on_accent.gamma_multiply(0.85) }, 3.0);
+        let secs = (dur - pos).max(0.0) as u32;
+        let label = format!("{}:{:02}{}", secs / 60, secs % 60, if playing.is_some() { "  🔊" } else { "" });
+        let lr = Rect::from_center_size(c + egui::vec2(0.0, 76.0), egui::vec2(64.0, 20.0));
+        p.rect_filled(lr, Rounding::same(10.0), Color32::from_black_alpha(110));
+        p.text(lr.center(), Align2::CENTER_CENTER, label, egui::FontId::proportional(12.0), th().on_accent);
+        let resp = resp.on_hover_text(self.t("circle_tap"));
+        if resp.clicked() {
+            if playing.is_some() {
+                self.circle_sound = None;
+            } else {
+                let player = audio.and_then(|(rate, pcm)| voice_rec::play(rate, pcm));
+                self.circle_sound = Some((a.hash.clone(), Instant::now(), player));
+            }
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(1000 / fps.max(1) as u64));
+    }
+
+    // ------------------------------------------------------------- popups
+
+    fn popups(&mut self, ctx: &egui::Context) {
+        if self.popup == Popup::None {
+            return;
+        }
+        let anchor = self.anchors.get("media_btns").copied().unwrap_or(Rect::from_min_size(Pos2::new(300.0, 500.0), Vec2::ZERO));
+        let size = egui::vec2(360.0, 330.0);
+        let pos = egui::pos2(anchor.min.x, anchor.min.y - size.y - 10.0);
+        let k = ctx.animate_bool_with_time(Id::new(("popup", self.popup as u8)), true, 0.18);
+        let area = egui::Area::new(Id::new(("popup_area", self.popup as u8)))
+            .order(Order::Foreground)
+            .fixed_pos(pos + egui::vec2(0.0, (1.0 - k) * 12.0))
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(th().window)
+                    .stroke(Stroke::new(1.0, th().line))
+                    .rounding(Rounding::same(14.0))
+                    .shadow(egui::epaint::Shadow { offset: egui::vec2(0.0, 6.0), blur: 22.0, spread: 0.0, color: Color32::from_black_alpha(50) })
+                    .inner_margin(egui::Margin::same(12.0))
+                    .show(ui, |ui| {
+                        ui.set_width(size.x - 24.0);
+                        ui.set_height(size.y - 24.0);
+                        match self.popup {
+                            Popup::Emoji => self.emoji_picker(ui),
+                            Popup::Gifs => self.gif_panel(ui),
+                            Popup::None => {}
+                        }
+                    });
+            });
+        self.popup_rect = area.response.rect;
+        // Close when clicking elsewhere (but not on the buttons that toggle it).
+        let clicked_outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().map(|p| !self.popup_rect.contains(p) && !anchor.contains(p)).unwrap_or(false));
+        if clicked_outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.popup = Popup::None;
+        }
+    }
+
+    fn emoji_picker(&mut self, ui: &mut egui::Ui) {
+        let hint = self.t("search");
+        ui.add(egui::TextEdit::singleline(&mut self.emoji_query).hint_text(hint).desired_width(f32::INFINITY));
+        ui.add_space(6.0);
+        let ctx = ui.ctx().clone();
+        ui.horizontal(|ui| {
+            for (ti, cat) in emoji::CATEGORIES.iter().enumerate() {
+                let tex = self.emoji.tex(&ctx, emoji::cat_icon(cat));
+                let sel = ti == self.emoji_tab && self.emoji_query.is_empty();
+                let key: &'static str = match *cat {
+                    "smileys" => "cat_smileys",
+                    "people" => "cat_people",
+                    "hearts" => "cat_hearts",
+                    "nature" => "cat_nature",
+                    "food" => "cat_food",
+                    "activity" => "cat_activity",
+                    _ => "cat_symbols",
+                };
+                let b = ui.add(egui::ImageButton::new(SizedTexture::new(tex, egui::vec2(20.0, 20.0))).selected(sel)).on_hover_text(self.t(key));
+                if b.clicked() {
+                    self.emoji_tab = ti;
+                    self.emoji_query.clear();
+                }
+            }
+        });
+        ui.add_space(4.0);
+        let q = self.emoji_query.trim().to_lowercase();
+        let cat = emoji::CATEGORIES[self.emoji_tab];
+        let items: Vec<usize> = (0..emoji::count()).filter(|i| if q.is_empty() { emoji::cat(*i) == cat } else { emoji::code(*i).contains(&q) }).collect();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            egui::Grid::new("emoji_grid").spacing(egui::vec2(4.0, 4.0)).show(ui, |ui| {
+                for (n, i) in items.iter().enumerate() {
+                    let tex = self.emoji.tex(&ctx, *i);
+                    let b = ui.add(egui::ImageButton::new(SizedTexture::new(tex, egui::vec2(28.0, 28.0))).frame(false)).on_hover_text(format!(":{}:", emoji::code(*i)));
+                    if b.clicked() {
+                        if !self.input.is_empty() && !self.input.ends_with(' ') {
+                            self.input.push(' ');
+                        }
+                        self.input.push_str(&format!(":{}: ", emoji::code(*i)));
+                    }
+                    if (n + 1) % 9 == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+        });
+    }
+
+    fn gif_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new(self.t("my_gifs")).color(th().ink).b());
+        ui.add_space(4.0);
+        let time = ui.input(|i| i.time);
+        egui::ScrollArea::vertical().max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
+            if self.settings.gifs.is_empty() {
+                ui.colored_label(th().ink2, self.t("no_gifs"));
+            }
+            let gifs = self.settings.gifs.clone();
+            ui.horizontal_wrapped(|ui| {
+                for h in gifs {
+                    let pick = match self.media.get(&h, MediaKind::Gif) {
+                        Ok(Some(Shown::Anim { frames, total_ms, .. })) => {
+                            let mut t = ((time * 1000.0) as u64 % *total_ms as u64) as u32;
+                            let mut id = frames[0].0.id();
+                            for (tex, ms) in frames.iter() {
+                                if t < *ms {
+                                    id = tex.id();
+                                    break;
+                                }
+                                t -= ms;
+                            }
+                            Some(id)
+                        }
+                        _ => None,
+                    };
+                    if let Some(id) = pick {
+                        if ui.add(egui::ImageButton::new(SizedTexture::new(id, egui::vec2(96.0, 96.0))).rounding(Rounding::same(8.0))).clicked() {
+                            if let Some(bytes) = store::load_blob(&h) {
+                                self.send_file("gif.gif".into(), bytes);
+                            }
+                        }
+                    }
+                }
+            });
+            ui.ctx().request_repaint_after(Duration::from_millis(80));
+        });
+        ui.add_space(6.0);
+        sep(ui);
+        ui.label(RichText::new(self.t("send_file")).color(th().ink).b());
+        ui.horizontal(|ui| {
+            let hint = self.t("path_hint");
+            ui.add(egui::TextEdit::singleline(&mut self.file_path).hint_text(hint).desired_width(ui.available_width() - 90.0));
+            if ui.add(egui::Button::new(RichText::new(self.t("send")).color(th().on_accent)).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
+                let path = expand_home(self.file_path.trim());
+                match std::fs::read(&path) {
+                    Ok(b) => {
+                        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                        self.send_file(name, b);
+                        self.file_path.clear();
+                    }
+                    Err(e) => self.toast(format!("{path}: {e}")),
+                }
+            }
+        });
+        ui.colored_label(th().ink2, RichText::new(self.t("drop_hint")).small());
+        ui.add_space(4.0);
+        ui.colored_label(th().ink2, RichText::new(self.t("gif_note")).small().italics());
+    }
+
+    // ------------------------------------------------------------- video circles
+
+    fn start_recording(&mut self) {
+        self.popup = Popup::None;
+        if !camera::supported() {
+            self.rec_error = Some(format!("{}\n{}", self.t("rec_not_built"), self.t("rec_permission")));
+            return;
+        }
+        self.rec = Some(camera::Recorder::start());
+        self.rec_tex = None;
+    }
+
+    fn recorder_overlay(&mut self, ctx: &egui::Context) {
+        if self.rec.is_none() && self.rec_error.is_none() {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("rec_dim")));
+        painter.rect_filled(screen, 0.0, Color32::from_black_alpha(140));
+        let mut finish = false;
+        let mut cancel = false;
+        egui::Area::new(Id::new("rec_card")).order(Order::Tooltip).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            egui::Frame::none().fill(th().window).rounding(Rounding::same(20.0)).inner_margin(egui::Margin::same(22.0)).show(ui, |ui| {
+                ui.set_width(340.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(self.t("rec_title")).color(th().ink).b().size(18.0));
+                    ui.add_space(10.0);
+                    if let Some(err) = self.rec_error.clone().or_else(|| self.rec.as_ref().and_then(|r| r.error())) {
+                        let text = if err == "no-camera-build" {
+                            format!("{}\n{}", self.t("rec_not_built"), self.t("rec_permission"))
+                        } else if err.contains('\n') {
+                            err
+                        } else {
+                            format!("{}\n{}", self.t("rec_no_camera").replace("{s}", &err), self.t("rec_permission"))
+                        };
+                        ui.colored_label(th().red, text);
+                        ui.add_space(12.0);
+                        if ui.add(egui::Button::new(RichText::new(self.t("close")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).clicked() {
+                            cancel = true;
+                        }
+                        return;
+                    }
+                    let Some(rec) = &self.rec else { return };
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(270.0, 270.0), egui::Sense::hover());
+                    let c = r.center();
+                    let p = ui.painter();
+                    p.circle_filled(c, 132.0, th().card);
+                    if let Some(img) = rec.latest() {
+                        match &mut self.rec_tex {
+                            Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                            None => self.rec_tex = Some(ui.ctx().load_texture("rec_preview", img, egui::TextureOptions::LINEAR)),
+                        }
+                    }
+                    if let Some(t) = &self.rec_tex {
+                        media::paint_circle(p, c, 126.0, t.id(), false);
+                    } else {
+                        p.text(c, Align2::CENTER_CENTER, self.t("rec_starting"), egui::FontId::proportional(14.0), th().ink2);
+                    }
+                    let frac = rec.elapsed() / camera::MAX_SECS;
+                    media::progress_ring(p, c, 132.0, frac, th().red, 4.0);
+                    ui.add_space(8.0);
+                    let blink = (ui.input(|i| i.time) * 2.0).sin() > 0.0;
+                    ui.horizontal(|ui| {
+                        ui.add_space(70.0);
+                        dot(ui, if blink { th().red } else { th().window });
+                        ui.colored_label(th().ink, self.t("rec_time").replace("{s}", &(rec.elapsed() as u32).to_string()));
+                    });
+                    ui.colored_label(th().ink2, RichText::new(if rec.has_sound() { self.t("rec_sound_on") } else { self.t("rec_sound_off") }).small());
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(30.0);
+                        if ui.add(egui::Button::new(RichText::new(self.t("rec_cancel")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0)).min_size(egui::vec2(110.0, 34.0))).clicked() {
+                            cancel = true;
+                        }
+                        if ui.add(egui::Button::new(RichText::new(self.t("rec_stop")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(150.0, 34.0))).clicked() {
+                            finish = true;
+                        }
+                    });
+                    if rec.auto_finished() {
+                        finish = true;
+                    }
+                });
+            });
+        });
+        if cancel {
+            if let Some(r) = self.rec.take() {
+                r.cancel();
+            }
+            self.rec_error = None;
+            self.rec_tex = None;
+        } else if finish {
+            if let Some(r) = self.rec.take() {
+                if let Some(clip) = r.finish() {
+                    let dur_ms = clip.dur_ms();
+                    let bytes = clip.encode();
+                    let channel = self.active_channel();
+                    let _ = self.handle.cmd_tx.send(Cmd::SendMedia {
+                        channel,
+                        body: String::new(),
+                        kind: MediaKind::Circle,
+                        name: "circle".into(),
+                        bytes,
+                        w: camera::SIZE,
+                        h: camera::SIZE,
+                        dur_ms,
+                    });
+                }
+            }
+            self.rec_tex = None;
+        }
+        ctx.request_repaint_after(Duration::from_millis(40));
+    }
+
+    // ------------------------------------------------------------- settings + toast
+
+    fn draw_toast(&mut self, ctx: &egui::Context) {
+        let Some((msg, at)) = self.toast.clone() else { return };
+        let age = at.elapsed().as_secs_f32();
+        if age > 4.0 {
+            self.toast = None;
+            return;
+        }
+        let alpha = ease_out((age / 0.25).min(1.0)) * (1.0 - ((age - 3.5) / 0.5).clamp(0.0, 1.0));
+        let screen = ctx.screen_rect();
+        egui::Area::new(Id::new("toast"))
+            .order(Order::Tooltip)
+            .anchor(Align2::CENTER_BOTTOM, [0.0, -46.0 - (1.0 - alpha) * 10.0])
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(th().ink.gamma_multiply(0.92 * alpha))
+                    .rounding(Rounding::same(18.0))
+                    .inner_margin(egui::Margin::symmetric(16.0, 9.0))
+                    .show(ui, |ui| {
+                        ui.set_max_width(screen.width() * 0.6);
+                        ui.label(RichText::new(msg).color(th().window.gamma_multiply(alpha)));
+                    });
+            });
+        ctx.request_repaint();
+    }
+}
+
+fn expand_home(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            return format!("{home}/{rest}");
+        }
+    }
+    p.to_string()
+}
+
+fn sep(ui: &mut egui::Ui) {
+    let r = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(r, 1.0), egui::Sense::hover());
+    ui.painter().hline(rect.x_range(), rect.center().y, Stroke::new(1.0, th().line));
+    ui.add_space(6.0);
+}
+
+fn dot(ui: &mut egui::Ui, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.5, color);
+}
+
+/// A rounded card; returns its screen rectangle (for tour anchors).
+fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) -> Rect {
+    egui::Frame::none()
+        .fill(th().surface)
+        .stroke(Stroke::new(1.0, th().line))
+        .rounding(Rounding::same(12.0))
+        .inner_margin(egui::Margin::same(16.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width().min(680.0));
+            ui.label(RichText::new(title).color(th().ink).b().size(17.0));
+            ui.add_space(8.0);
+            body(ui);
+        })
+        .response
+        .rect
+}
+
+
+fn bullet(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal_top(|ui| {
+        ui.colored_label(th().accent, "•");
+        ui.vertical(|ui| {
+            ui.colored_label(th().ink2, text);
+        });
+    });
+    ui.add_space(4.0);
+}
+
+fn member_row(ui: &mut egui::Ui, name: &str, role: Option<&str>, connected: bool, talking: bool, voice_icon: Option<egui::TextureId>) {
+    ui.horizontal(|ui| {
+        let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
+        let col = if connected { name_color(name) } else { th().line };
+        avatar(ui, &initial, 13.0, col, if talking { Some(th().green) } else { None });
+        ui.label(RichText::new(name).color(if connected { th().ink } else { th().ink2 }));
+        if let Some(tex) = voice_icon {
+            ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(13.0, 13.0))).tint(if talking { th().green } else { th().ink2 }));
+        }
+        if let Some(r) = role {
+            ui.label(RichText::new(r).color(th().accent).small().b());
+        }
+    });
+}
+
+// ---- icons (GNOME-style tiles + symbolic icons, pre-rendered from SVG) ----
+const APP_ICON: &[u8] = include_bytes!("../assets/icon-128.png");
+const FRIENDS_TILE: &[u8] = include_bytes!("../assets/servers/friends.png");
+const SYM_SPEAKER: &[u8] = include_bytes!("../assets/symbolic/speaker.png");
+const SYM_HASH: &[u8] = include_bytes!("../assets/symbolic/hash.png");
+const SYM_MIC: &[u8] = include_bytes!("../assets/symbolic/mic.png");
+const SYM_MIC_OFF: &[u8] = include_bytes!("../assets/symbolic/mic-off.png");
+const SYM_HANGUP: &[u8] = include_bytes!("../assets/symbolic/hangup.png");
+const SYM_GEAR: &[u8] = include_bytes!("../assets/symbolic/gear.png");
+const SYM_HEADPHONES: &[u8] = include_bytes!("../assets/symbolic/headphones.png");
+/// Wordless step-by-step pictures (docs/img/*.svg); captions come from i18n.
+const GUIDE: &[(&str, &[u8], &str, &str)] = &[
+    ("g1", include_bytes!("../assets/guide/guide-1-network.png"), "g1_h", "g1_b"),
+    ("g2", include_bytes!("../assets/guide/guide-2-code.png"), "g2_h", "g2_b"),
+    ("g3", include_bytes!("../assets/guide/guide-3-friend.png"), "g3_h", "g3_b"),
+    ("g4", include_bytes!("../assets/guide/guide-4-chat.png"), "g4_h", "g4_b"),
+    ("g5", include_bytes!("../assets/guide/guide-5-circle.png"), "g5_h", "g5_b"),
+    ("g6", include_bytes!("../assets/guide/guide-6-voice.png"), "g6_h", "g6_b"),
+];
+
+#[derive(Default)]
+struct Icons {
+    map: HashMap<&'static str, egui::TextureHandle>,
+}
+
+impl Icons {
+    fn get(&mut self, ctx: &egui::Context, key: &'static str, png: &'static [u8]) -> egui::TextureId {
+        self.map
+            .entry(key)
+            .or_insert_with(|| {
+                let img = image::load_from_memory(png).map(|i| i.to_rgba8()).unwrap_or_else(|_| image::RgbaImage::new(1, 1));
+                let ci = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+                ctx.load_texture(key, ci, egui::TextureOptions::LINEAR)
+            })
+            .id()
+    }
+}
+
+/// Real bold (Inter SemiBold) instead of egui's colour-only "strong".
+trait Bold {
+    fn b(self) -> RichText;
+}
+impl Bold for RichText {
+    fn b(self) -> RichText {
+        self.family(egui::FontFamily::Name("bold".into()))
+    }
+}
+
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text.to_uppercase()).color(th().ink2).size(11.5).b());
+    ui.add_space(2.0);
+}
+
+/// Server/home tile in the rail: rounded picture, Discord-like pill on the left when selected.
+fn rail_tile(ui: &mut egui::Ui, tex: egui::TextureId, selected: bool, badge: Option<usize>) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    let k = ui.ctx().animate_bool_with_time(resp.id, selected || hovered, 0.15);
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(Rect::from_center_size(r.center() + egui::vec2(-1.0, 0.0), r.size() + egui::vec2(8.0, 8.0)), Rounding::same(16.0), th().window);
+    }
+    let grow = 2.0 * k;
+    p.image(tex, r.expand(grow), Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
+    let pill_h = if selected { 34.0 } else if hovered { 16.0 } else { 0.0 };
+    if pill_h > 0.0 {
+        let x = r.min.x - 10.0;
+        p.rect_filled(Rect::from_min_max(egui::pos2(x, r.center().y - pill_h / 2.0), egui::pos2(x + 4.0, r.center().y + pill_h / 2.0)), Rounding::same(2.0), th().ink);
+    }
+    if let Some(n) = badge {
+        let c = r.right_bottom() - egui::vec2(4.0, 4.0);
+        p.circle_filled(c, 9.0, th().rail);
+        p.circle_filled(c, 7.5, th().green);
+        p.text(c, Align2::CENTER_CENTER, n.min(99).to_string(), egui::FontId::new(10.0, egui::FontFamily::Name("bold".into())), th().on_accent);
+    }
+    resp
+}
+
+/// One channel line with a symbolic icon (# or speaker).
+fn channel_row(ui: &mut egui::Ui, icon: egui::TextureId, name: &str, selected: bool, voice: bool) -> egui::Response {
+    let w = ui.available_width();
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(w, 30.0), egui::Sense::click());
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(r, Rounding::same(8.0), if voice { th().green.gamma_multiply(0.18) } else { th().sel });
+    } else if resp.hovered() {
+        p.rect_filled(r, Rounding::same(8.0), th().rail);
+    }
+    let col = if selected { th().ink } else { th().ink2 };
+    let icon_col = if selected && voice { th().green_text } else { col };
+    p.image(icon, Rect::from_center_size(egui::pos2(r.min.x + 16.0, r.center().y), egui::vec2(15.0, 15.0)), Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), icon_col);
+    let font = if selected { egui::FontId::new(14.0, egui::FontFamily::Name("bold".into())) } else { egui::FontId::proportional(14.0) };
+    p.text(egui::pos2(r.min.x + 32.0, r.center().y), Align2::LEFT_CENTER, name, font, col);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// Round initial avatar with an optional "talking" ring.
+fn avatar(ui: &mut egui::Ui, initial: &str, r: f32, color: Color32, ring: Option<Color32>) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(r * 2.0 + 6.0, r * 2.0 + 6.0), egui::Sense::hover());
+    let c = rect.center();
+    if let Some(rc) = ring {
+        ui.painter().circle_stroke(c, r + 2.5, Stroke::new(2.0, rc));
+    }
+    ui.painter().circle_filled(c, r, color);
+    ui.painter().text(c, Align2::CENTER_CENTER, initial, egui::FontId::new(r * 0.95, egui::FontFamily::Name("bold".into())), th().on_accent);
+}
+
+/// Stable colour per name, from the GNOME palette.
+fn name_color(name: &str) -> Color32 {
+    const P: [Color32; 8] = [
+        Color32::from_rgb(0x1C, 0x71, 0xD8),
+        Color32::from_rgb(0x26, 0xA2, 0x69),
+        Color32::from_rgb(0x91, 0x41, 0xAC),
+        Color32::from_rgb(0xE6, 0x61, 0x00),
+        Color32::from_rgb(0xC0, 0x1C, 0x28),
+        Color32::from_rgb(0x21, 0x90, 0xA4),
+        Color32::from_rgb(0x86, 0x5E, 0x3C),
+        Color32::from_rgb(0x5D, 0x73, 0x85),
+    ];
+    let h = name.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    P[(h % 8) as usize]
+}
+
+fn icon_button(ui: &mut egui::Ui, tex: egui::TextureId, fg: Color32, bg: Color32, size: f32) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let bg = if resp.hovered() { bg.gamma_multiply(0.85) } else { bg };
+    ui.painter().rect_filled(r, Rounding::same(size * 0.3), bg);
+    let s = size * 0.52;
+    ui.painter().image(tex, Rect::from_center_size(r.center(), egui::vec2(s, s)), Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), fg);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+fn install_theme(ctx: &egui::Context) {
+    let c = th();
+    let mut v = if c.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    v.panel_fill = c.window;
+    v.window_fill = c.window;
+    v.window_stroke = Stroke::new(1.0, c.line);
+    v.extreme_bg_color = c.card; // text inputs
+    v.faint_bg_color = c.surface;
+    v.code_bg_color = c.card;
+    v.override_text_color = Some(c.ink);
+    v.widgets.noninteractive.bg_fill = c.window;
+    v.widgets.noninteractive.weak_bg_fill = c.window;
+    v.widgets.noninteractive.bg_stroke.color = c.line;
+    v.widgets.noninteractive.fg_stroke.color = c.ink;
+    for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
+        w.fg_stroke.color = c.ink;
+        w.bg_stroke = Stroke::new(1.0, c.line);
+    }
+    v.widgets.inactive.bg_fill = c.card;
+    v.widgets.inactive.weak_bg_fill = c.card;
+    v.widgets.hovered.bg_fill = c.sel;
+    v.widgets.hovered.weak_bg_fill = c.sel;
+    v.widgets.active.bg_fill = c.accent.gamma_multiply(0.8);
+    v.widgets.active.weak_bg_fill = c.sel;
+    v.widgets.open.bg_fill = c.card;
+    v.widgets.open.weak_bg_fill = c.card;
+    v.selection.bg_fill = c.accent.gamma_multiply(if c.dark { 0.55 } else { 0.35 });
+    v.selection.stroke = Stroke::new(1.0, c.accent);
+    v.hyperlink_color = c.accent;
+    v.popup_shadow.color = Color32::from_black_alpha(if c.dark { 120 } else { 40 });
+    ctx.set_visuals(v);
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    use egui::{FontFamily as F, FontId, TextStyle as T};
+    let body = if c.mono { F::Monospace } else { F::Proportional };
+    style.text_styles = [
+        (T::Heading, FontId::new(22.0, F::Name("bold".into()))),
+        (T::Body, FontId::new(if c.mono { 13.5 } else { 14.5 }, body.clone())),
+        (T::Button, FontId::new(if c.mono { 13.0 } else { 14.0 }, body)),
+        (T::Small, FontId::new(12.0, F::Proportional)),
+        (T::Monospace, FontId::new(13.0, F::Monospace)),
+    ]
+    .into();
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    style.spacing.slider_width = 260.0;
+    ctx.set_style(style);
+}
+
+/// egui's fonts + a system CJK font as fallback, so Chinese/Japanese text
+/// (UI or messages) renders. For a Chinese UI the Simplified face is preferred.
+/// Inter (the face GNOME's Adwaita Sans is built on, OFL-1.1) embedded for UI
+/// text, Inter SemiBold as the "bold" family, egui's fonts for symbols, and a
+/// system CJK font as fallback.
+fn install_fonts(ctx: &egui::Context, lang: Lang) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("inter".into(), egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.otf")));
+    fonts.font_data.insert("inter-semibold".into(), egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-SemiBold.otf")));
+    let base: Vec<String> = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
+    fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "inter".into());
+    let mut bold = vec!["inter-semibold".to_string()];
+    bold.extend(base);
+    fonts.families.insert(egui::FontFamily::Name("bold".into()), bold);
+    let candidates = [
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\YuGothR.ttc",
+        "C:\\Windows\\Fonts\\meiryo.ttc",
+    ];
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            let mut fd = egui::FontData::from_owned(bytes);
+            // NotoSansCJK.ttc faces: 0 JP, 1 KR, 2 SC, 3 TC, 4 HK.
+            if path.contains("NotoSansCJK") && lang == Lang::Zh {
+                fd.index = 2;
+            }
+            fonts.font_data.insert("cjk".into(), fd);
+            for fam in [egui::FontFamily::Proportional, egui::FontFamily::Monospace, egui::FontFamily::Name("bold".into())] {
+                fonts.families.entry(fam).or_default().push("cjk".into());
+            }
+            break;
+        }
+    }
+    ctx.set_fonts(fonts);
+}
+
+fn load_icon() -> Option<egui::IconData> {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).ok()
+}
+
+pub fn run_gui(cfg: NetConfig) -> eframe::Result<()> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1180.0, 760.0])
+        .with_min_inner_size([900.0, 560.0])
+        .with_title("CyberCord — SocioCyberneering Inc.")
+        .with_drag_and_drop(true);
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(Arc::new(icon));
+    }
+    let native_options = eframe::NativeOptions { viewport, ..Default::default() };
+    eframe::run_native("CyberCord", native_options, Box::new(move |cc| Ok(Box::new(CyberApp::new(cc, cfg)))))
+}
+
+// ---- music messages ----
+
+enum MusicMsg {
+    /// Waveform + length + tags, for drawing the message (samples are dropped).
+    Info { hash: String, peaks: Vec<f32>, dur_ms: u32 },
+    /// Fully decoded track, ready to play from `start` (0..1).
+    Track { hash: String, track: Arc<music::Track>, start: f32 },
+    Failed { hash: String },
+    /// A file the user is sending: (label, length) worked out off the UI thread.
+    Send { channel: ChannelId, name: String, bytes: Vec<u8>, dur_ms: u32 },
+    SendFailed,
+}
+
+enum MusicInfo {
+    Loading,
+    Ready { peaks: Vec<f32>, dur_ms: u32 },
+    Failed,
+}
+
+struct Music {
+    info: HashMap<String, MusicInfo>,
+    tx: std::sync::mpsc::Sender<MusicMsg>,
+    rx: std::sync::mpsc::Receiver<MusicMsg>,
+    /// The track playing now (one at a time).
+    player: Option<(String, music::Player)>,
+    /// A track being decoded for playback.
+    preparing: Option<String>,
+}
+
+impl Default for Music {
+    fn default() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self { info: HashMap::new(), tx, rx, player: None, preparing: None }
+    }
+}
+
+const BARS: usize = 56;
+
+impl Music {
+    fn want_info(&mut self, hash: &str) {
+        if self.info.contains_key(hash) {
+            return;
+        }
+        self.info.insert(hash.to_string(), MusicInfo::Loading);
+        let (tx, h) = (self.tx.clone(), hash.to_string());
+        std::thread::spawn(move || {
+            let msg = match store::load_blob(&h).ok_or_else(|| "missing".to_string()).and_then(|b| music::decode(&b)) {
+                Ok(t) => MusicMsg::Info { peaks: t.peaks(BARS), dur_ms: t.dur_ms(), hash: h },
+                Err(_) => MusicMsg::Failed { hash: h },
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    fn prepare(&mut self, hash: &str, start: f32) {
+        self.preparing = Some(hash.to_string());
+        let (tx, h) = (self.tx.clone(), hash.to_string());
+        std::thread::spawn(move || {
+            let msg = match store::load_blob(&h).ok_or_else(|| "missing".to_string()).and_then(|b| music::decode(&b)) {
+                Ok(t) => MusicMsg::Track { hash: h, track: Arc::new(t), start },
+                Err(_) => MusicMsg::Failed { hash: h },
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// State of `hash` if it is the current track: (playing, fraction, position ms).
+    fn now(&self, hash: &str) -> Option<(bool, f32, u32)> {
+        self.player.as_ref().filter(|(h, _)| h == hash).map(|(_, p)| (p.state.is_playing(), p.state.fraction(), p.state.position_ms()))
+    }
+}
+
+impl CyberApp {
+    fn poll_music(&mut self) {
+        while let Ok(msg) = self.music.rx.try_recv() {
+            match msg {
+                MusicMsg::Info { hash, peaks, dur_ms } => {
+                    self.music.info.insert(hash, MusicInfo::Ready { peaks, dur_ms });
+                }
+                MusicMsg::Track { hash, track, start } => {
+                    if self.music.preparing.as_deref() != Some(hash.as_str()) {
+                        continue; // the user picked another track meanwhile
+                    }
+                    self.music.preparing = None;
+                    self.music.player = None; // stop the previous one first
+                    match music::play(track) {
+                        Some(p) => {
+                            p.state.seek(start);
+                            self.music.player = Some((hash, p));
+                        }
+                        None => {
+                            let m = self.t("music_bad").to_string();
+                            self.toast(m);
+                        }
+                    }
+                }
+                MusicMsg::Failed { hash } => {
+                    if self.music.preparing.as_deref() == Some(hash.as_str()) {
+                        self.music.preparing = None;
+                    }
+                    self.music.info.insert(hash, MusicInfo::Failed);
+                }
+                MusicMsg::Send { channel, name, bytes, dur_ms } => {
+                    let _ = self.handle.cmd_tx.send(Cmd::SendMedia { channel, body: String::new(), kind: MediaKind::Audio, name, bytes, w: 0, h: 0, dur_ms });
+                }
+                MusicMsg::SendFailed => {
+                    let m = self.t("music_bad").to_string();
+                    self.toast(m);
+                }
+            }
+        }
+    }
+
+    /// Play / pause / seek. Without a sound build, hand the file to the system player.
+    fn music_action(&mut self, a: &Attachment, seek: Option<f32>) {
+        if !music::CAN_PLAY {
+            if let Some(bytes) = store::load_blob(&a.hash) {
+                match music::open_externally(&a.hash, &bytes, &a.name) {
+                    Ok(_) => {
+                        let m = self.t("music_external").to_string();
+                        self.toast(m);
+                    }
+                    Err(e) => self.toast(e),
+                }
+            }
+            return;
+        }
+        if let Some((h, p)) = &self.music.player {
+            if *h == a.hash {
+                match seek {
+                    Some(f) => {
+                        p.state.seek(f);
+                        p.state.set_playing(true);
+                    }
+                    None => p.state.set_playing(!p.state.is_playing()),
+                }
+                return;
+            }
+        }
+        // another track (or none): pause the old one and decode this one
+        if let Some((_, p)) = &self.music.player {
+            p.state.set_playing(false);
+        }
+        self.music.prepare(&a.hash, seek.unwrap_or(0.0));
+    }
+
+    fn music_widget(&mut self, ui: &mut egui::Ui, a: &Attachment) {
+        self.music.want_info(&a.hash);
+        let (peaks, dur_ms, failed) = match self.music.info.get(&a.hash) {
+            Some(MusicInfo::Ready { peaks, dur_ms }) => (Some(peaks.clone()), *dur_ms, false),
+            Some(MusicInfo::Failed) => (None, a.dur_ms, true),
+            _ => (None, a.dur_ms, false),
+        };
+        let now = self.music.now(&a.hash);
+        let preparing = self.music.preparing.as_deref() == Some(a.hash.as_str());
+        let playing = now.map(|n| n.0).unwrap_or(false);
+        let frac = now.map(|n| n.1).unwrap_or(0.0);
+        let time = ui.input(|i| i.time) as f32;
+        let mut click_play = false;
+        let mut seek: Option<f32> = None;
+        let mut open = false;
+
+        egui::Frame::none().fill(th().surface).stroke(Stroke::new(1.0, th().line)).rounding(Rounding::same(14.0)).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+            ui.set_width(400.0);
+            ui.horizontal(|ui| {
+                // round play / pause button
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::click());
+                let p = ui.painter();
+                let bg = if failed { th().line } else if resp.hovered() { th().accent_hover } else { th().accent };
+                p.circle_filled(r.center(), 23.0, bg);
+                let c = r.center();
+                if preparing {
+                    let a0 = time * 5.0;
+                    let pts: Vec<Pos2> = (0..20).map(|i| {
+                        let t = a0 + i as f32 * 0.22;
+                        c + egui::vec2(t.cos(), t.sin()) * 11.0
+                    }).collect();
+                    p.add(egui::Shape::line(pts, Stroke::new(3.0, th().on_accent)));
+                    ui.ctx().request_repaint();
+                } else if playing {
+                    p.rect_filled(Rect::from_center_size(c - egui::vec2(5.0, 0.0), egui::vec2(5.0, 16.0)), Rounding::same(1.5), th().on_accent);
+                    p.rect_filled(Rect::from_center_size(c + egui::vec2(5.0, 0.0), egui::vec2(5.0, 16.0)), Rounding::same(1.5), th().on_accent);
+                } else {
+                    p.add(egui::Shape::convex_polygon(
+                        vec![c + egui::vec2(-5.0, -9.0), c + egui::vec2(10.0, 0.0), c + egui::vec2(-5.0, 9.0)],
+                        th().on_accent,
+                        Stroke::NONE,
+                    ));
+                }
+                let tip = if playing { self.t("music_pause") } else if music::CAN_PLAY { self.t("music_play") } else { self.t("music_open") };
+                if resp.on_hover_text(tip).clicked() && !failed {
+                    click_play = true;
+                }
+                ui.add_space(4.0);
+                ui.vertical(|ui| {
+                    let (title, sub) = if a.name == voice_rec::VOICE_MSG_NAME {
+                        (self.t("voice_msg").to_string(), format!("{} KB", a.size / 1024))
+                    } else {
+                        match a.name.split_once(" — ") {
+                            Some((artist, t)) => (t.to_string(), artist.to_string()),
+                            None => (a.name.clone(), format!("♪ {} KB", a.size / 1024)),
+                        }
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Label::new(RichText::new(title).color(th().ink).b()).truncate());
+                    });
+                    ui.colored_label(th().ink2, RichText::new(sub).small());
+                    // waveform
+                    let (wr, wresp) = ui.allocate_exact_size(egui::vec2(276.0, 28.0), egui::Sense::click());
+                    let n = BARS;
+                    let bw = wr.width() / n as f32;
+                    for i in 0..n {
+                        let v = peaks.as_ref().map(|p| p[i]).unwrap_or(0.12 + 0.1 * ((i as f32 * 0.7).sin().abs()));
+                        let h = (v * wr.height()).max(3.0);
+                        let x = wr.min.x + i as f32 * bw + bw * 0.5;
+                        let played = (i as f32 + 0.5) / n as f32 <= frac && now.is_some();
+                        let col = if failed { th().line } else if played { th().accent } else { th().peri };
+                        ui.painter().line_segment([egui::pos2(x, wr.center().y - h / 2.0), egui::pos2(x, wr.center().y + h / 2.0)], Stroke::new((bw - 1.6).max(1.5), col));
+                    }
+                    if wresp.hovered() && !failed {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if wresp.on_hover_text(self.t("music_seek")).clicked() && !failed {
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            seek = Some(((pos.x - wr.min.x) / wr.width()).clamp(0.0, 1.0));
+                        }
+                    }
+                    let pos_ms = now.map(|n| n.2).unwrap_or(0);
+                    let fmt = |ms: u32| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
+                    let label = if failed {
+                        self.t("music_bad").to_string()
+                    } else if preparing {
+                        self.t("music_loading").to_string()
+                    } else if now.is_some() {
+                        format!("{} / {}", fmt(pos_ms), fmt(dur_ms))
+                    } else {
+                        fmt(dur_ms)
+                    };
+                    ui.colored_label(th().ink2, RichText::new(label).small());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("↗").color(th().ink2).size(15.0)).fill(th().card).rounding(Rounding::same(8.0))).on_hover_text(self.t("music_open")).clicked() {
+                        open = true;
+                    }
+                });
+            });
+        });
+        if playing {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        if self.autoplay && peaks.is_some() {
+            self.autoplay = false;
+            seek = Some(0.35);
+        }
+        if click_play {
+            self.music_action(a, None);
+        } else if let Some(f) = seek {
+            self.music_action(a, Some(f));
+        } else if open {
+            if let Some(bytes) = store::load_blob(&a.hash) {
+                if let Err(e) = music::open_externally(&a.hash, &bytes, &a.name) {
+                    self.toast(e);
+                }
+            }
+        }
+    }
+}
+
+// ---- voice messages + Settings → Sound ----
+
+impl CyberApp {
+    fn start_voice_message(&mut self) {
+        self.popup = Popup::None;
+        if !voice::AUDIO_ENABLED {
+            let m = self.t("no_sound_build").to_string();
+            self.toast(m);
+            return;
+        }
+        self.music.player = None; // don't record the music
+        match voice_rec::MicRecorder::start() {
+            Some(rec) => self.vm = Some((rec, Instant::now(), Vec::new())),
+            None => {
+                let m = self.t("vm_no_mic").to_string();
+                self.toast(m);
+            }
+        }
+    }
+
+    /// The composer while a voice message is being recorded.
+    fn voice_message_bar(&mut self, ui: &mut egui::Ui, ch: &ChannelId) {
+        let Some((rec, started, levels)) = &mut self.vm else { return };
+        let secs = started.elapsed().as_secs_f32();
+        if self.vm_last_level.elapsed() > Duration::from_millis(70) {
+            self.vm_last_level = Instant::now();
+            levels.push(rec.level());
+            if levels.len() > 400 {
+                levels.remove(0);
+            }
+        }
+        let levels = levels.clone();
+        let time = ui.input(|i| i.time) as f32;
+        let mut send = ui.input(|i| i.key_pressed(egui::Key::Enter)) || secs >= voice_rec::VOICE_MSG_MAX_SECS as f32;
+        let mut cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+        let pulse = 0.5 + 0.5 * (time * 4.0).sin();
+        let (r, _) = ui.allocate_exact_size(egui::vec2(22.0, 32.0), egui::Sense::hover());
+        ui.painter().circle_filled(r.center(), 5.0 + 2.0 * pulse, th().red.gamma_multiply(0.6 + 0.4 * pulse));
+        let s = secs as u32;
+        ui.label(RichText::new(format!("{}:{:02}", s / 60, s % 60)).color(th().ink).b().size(15.0));
+        ui.add_space(6.0);
+        // live waveform of the last few seconds
+        let w = (ui.available_width() - 240.0).max(80.0);
+        let (wr, _) = ui.allocate_exact_size(egui::vec2(w, 32.0), egui::Sense::hover());
+        let bars = (w / 4.0) as usize;
+        let start = levels.len().saturating_sub(bars);
+        for (i, v) in levels[start..].iter().enumerate() {
+            let h = (v.sqrt() * 30.0).max(2.0);
+            let x = wr.min.x + i as f32 * 4.0 + 1.5;
+            ui.painter().line_segment([egui::pos2(x, wr.center().y - h / 2.0), egui::pos2(x, wr.center().y + h / 2.0)], Stroke::new(2.5, th().accent));
+        }
+        if levels.len() < 3 {
+            ui.painter().text(wr.left_center(), Align2::LEFT_CENTER, self.t("vm_recording"), egui::FontId::proportional(13.0), th().ink2);
+        }
+        if ui.add(egui::Button::new(RichText::new(self.t("vm_cancel")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0)).min_size(egui::vec2(90.0, 32.0))).clicked() {
+            cancel = true;
+        }
+        if ui.add(egui::Button::new(RichText::new(self.t("vm_send")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(110.0, 32.0))).clicked() {
+            send = true;
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(50));
+
+        if cancel {
+            self.vm = None;
+        } else if send {
+            if let Some((rec, _, _)) = self.vm.take() {
+                match voice_rec::finish_voice_message(rec) {
+                    Some((bytes, dur_ms)) => {
+                        let _ = self.handle.cmd_tx.send(Cmd::SendMedia {
+                            channel: ch.clone(),
+                            body: String::new(),
+                            kind: MediaKind::Audio,
+                            name: voice_rec::VOICE_MSG_NAME.into(),
+                            bytes,
+                            w: 0,
+                            h: 0,
+                            dur_ms,
+                        });
+                    }
+                    None => {
+                        let m = self.t("vm_short").to_string();
+                        self.toast(m);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- full-screen settings (Discord-like) ----
+
+#[derive(Clone, Copy, PartialEq)]
+enum SetTab {
+    Appearance,
+    Voice,
+    Language,
+    Help,
+    About,
+    Privacy,
+}
+
+impl CyberApp {
+    fn settings_screen(&mut self, ctx: &egui::Context) {
+        let c = th();
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.close_settings();
+            return;
+        }
+        let k = ease_out(self.set_opened.elapsed().as_secs_f32() / 0.25);
+        if k < 1.0 {
+            ctx.request_repaint();
+        }
+        let tabs: [(SetTab, &'static str); 6] = [
+            (SetTab::Appearance, "set_appearance"),
+            (SetTab::Voice, "set_voice"),
+            (SetTab::Language, "language"),
+            (SetTab::Privacy, "set_privacy"),
+            (SetTab::Help, "set_help"),
+            (SetTab::About, "about"),
+        ];
+        // left: section list, right-aligned like Discord
+        egui::SidePanel::left("set_nav")
+            .exact_width((ctx.screen_rect().width() * 0.28).clamp(220.0, 360.0))
+            .resizable(false)
+            .frame(egui::Frame::none().fill(c.surface).inner_margin(egui::Margin { left: 16.0, right: 12.0, top: 48.0, bottom: 16.0 }))
+            .show(ctx, |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                    ui.set_max_width(210.0);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.label(RichText::new(self.t("settings_title").to_uppercase()).color(c.ink2).size(11.5).b());
+                        ui.add_space(6.0);
+                        for (tab, key) in tabs {
+                            let sel = self.set_tab == tab;
+                            let w = ui.available_width();
+                            let (r, resp) = ui.allocate_exact_size(egui::vec2(w, 34.0), egui::Sense::click());
+                            if sel {
+                                ui.painter().rect_filled(r, Rounding::same(6.0), c.sel);
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(r, Rounding::same(6.0), c.card);
+                            }
+                            let font = if sel { egui::FontId::new(14.5, egui::FontFamily::Name("bold".into())) } else { egui::FontId::proportional(14.5) };
+                            ui.painter().text(egui::pos2(r.min.x + 10.0, r.center().y), Align2::LEFT_CENTER, self.t(key), font, if sel { c.ink } else { c.ink2 });
+                            if resp.clicked() && !sel {
+                                self.set_tab = tab;
+                                self.set_opened = Instant::now();
+                                self.monitor = None;
+                            }
+                            ui.add_space(2.0);
+                        }
+                        ui.add_space(10.0);
+                        sep(ui);
+                        ui.horizontal(|ui| {
+                            let initial = self.self_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                            avatar(ui, &initial, 15.0, c.accent, None);
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(&self.self_name).color(c.ink).b());
+                                ui.colored_label(c.ink2, RichText::new(short(&self.self_id)).small());
+                            });
+                        });
+                    });
+                });
+            });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(c.window).inner_margin(egui::Margin { left: 40.0, right: 24.0, top: 40.0, bottom: 16.0 }))
+            .show(ctx, |ui| {
+                // close button (top right)
+                let close_r = Rect::from_min_size(egui::pos2(ui.max_rect().max.x - 48.0, ui.max_rect().min.y - 8.0), egui::vec2(40.0, 56.0));
+                let resp = ui.interact(close_r, Id::new("set_close"), egui::Sense::click());
+                let cc = close_r.center_top() + egui::vec2(0.0, 18.0);
+                ui.painter().circle_stroke(cc, 17.0, Stroke::new(2.0, if resp.hovered() { c.ink } else { c.ink2 }));
+                let x = 5.5;
+                for (a, b) in [(egui::vec2(-x, -x), egui::vec2(x, x)), (egui::vec2(-x, x), egui::vec2(x, -x))] {
+                    ui.painter().line_segment([cc + a, cc + b], Stroke::new(2.0, if resp.hovered() { c.ink } else { c.ink2 }));
+                }
+                ui.painter().text(cc + egui::vec2(0.0, 30.0), Align2::CENTER_CENTER, self.t("close_esc"), egui::FontId::new(11.0, egui::FontFamily::Name("bold".into())), c.ink2);
+                if resp.clicked() {
+                    self.close_settings();
+                    return;
+                }
+                let title = tabs.iter().find(|(t, _)| *t == self.set_tab).map(|(_, k)| *k).unwrap_or("settings_title");
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add_space((1.0 - k) * 16.0);
+                    ui.set_max_width((ui.available_width() - 56.0).min(760.0));
+                    ui.label(RichText::new(self.t(title)).color(c.ink).b().size(22.0));
+                    ui.add_space(18.0);
+                    match self.set_tab {
+                        SetTab::Appearance => self.tab_appearance(ui),
+                        SetTab::Voice => self.tab_voice(ui),
+                        SetTab::Language => self.tab_language(ui),
+                        SetTab::Help => self.tab_help(ui),
+                        SetTab::About => self.tab_about(ui),
+                        SetTab::Privacy => {
+                            let label = self.t("listed_opt");
+                            if ui.checkbox(&mut self.settings.listed, label).changed() {
+                                store::save_settings(&self.settings);
+                                let _ = self.handle.cmd_tx.send(Cmd::SetListed(self.settings.listed));
+                            }
+                            ui.add_space(6.0);
+                            ui.colored_label(th().ink2, self.t("listed_note"));
+                            ui.add_space(18.0);
+                            let label = self.t("global_opt");
+                            if ui.checkbox(&mut self.settings.global, label).changed() {
+                                store::save_settings(&self.settings);
+                            }
+                            ui.add_space(6.0);
+                            ui.colored_label(th().ink2, self.t("global_note"));
+                            ui.colored_label(th().ink2, RichText::new(self.t("restart_note")).small().italics());
+                        }
+                    }
+                    ui.add_space(30.0);
+                });
+            });
+    }
+
+    fn close_settings(&mut self) {
+        self.show_settings = false;
+        self.monitor = None;
+        store::save_settings(&self.settings);
+    }
+
+    fn tab_appearance(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        ui.label(RichText::new(self.t("theme_h").to_uppercase()).color(c.ink2).size(12.0).b());
+        ui.add_space(8.0);
+        let cols = ((ui.available_width() + 14.0) / 214.0).floor().max(1.0) as usize;
+        let mut picked: Option<&'static str> = None;
+        egui::Grid::new("themes").spacing(egui::vec2(14.0, 14.0)).show(ui, |ui| {
+            for (i, t) in theme::THEMES.iter().enumerate() {
+                let active = self.settings.theme == t.id || (self.settings.theme.is_empty() && i == 0);
+                if theme_card(ui, &t.pal, self.t(t.name_key), active).clicked() {
+                    picked = Some(t.id);
+                }
+                if (i + 1) % cols == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+        if let Some(id) = picked {
+            self.settings.theme = id.to_string();
+            store::save_settings(&self.settings);
+        }
+        ui.add_space(8.0);
+        ui.colored_label(c.ink2, RichText::new(self.t("theme_note")).small());
+        ui.add_space(22.0);
+        ui.label(RichText::new(self.t("ui_scale").to_uppercase()).color(c.ink2).size(12.0).b());
+        ui.add_space(6.0);
+        let mut v = self.settings.ui_scale;
+        let r = ui.add(egui::Slider::new(&mut v, 80.0..=150.0).step_by(5.0).fixed_decimals(0).suffix(" %"));
+        if r.changed() {
+            self.settings.ui_scale = v;
+        }
+        if r.drag_stopped() || r.lost_focus() {
+            store::save_settings(&self.settings);
+        }
+    }
+
+    fn tab_language(&mut self, ui: &mut egui::Ui) {
+        let sys = i18n::system();
+        let auto_label = self.t("lang_auto").replace("{lang}", sys.native());
+        let current = if self.settings.lang.is_empty() || self.settings.lang == "auto" { auto_label.clone() } else { self.lang.native().to_string() };
+        let mut choice: Option<String> = None;
+        egui::ComboBox::from_id_salt("lang_combo").selected_text(current).width(340.0).show_ui(ui, |ui| {
+            if ui.selectable_label(self.settings.lang.is_empty() || self.settings.lang == "auto", &auto_label).clicked() {
+                choice = Some("auto".into());
+            }
+            for l in i18n::ALL {
+                if ui.selectable_label(self.settings.lang == l.code(), l.native()).clicked() {
+                    choice = Some(l.code().into());
+                }
+            }
+        });
+        if let Some(cn) = choice {
+            self.settings.lang = cn;
+            store::save_settings(&self.settings);
+            let new = i18n::resolve(&self.settings.lang);
+            if new != self.lang {
+                self.lang = new;
+                install_fonts(ui.ctx(), new);
+            }
+        }
+    }
+
+    fn tab_help(&mut self, ui: &mut egui::Ui) {
+        if ui.add(egui::Button::new(RichText::new(self.t("show_tour")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(200.0, 36.0))).clicked() {
+            self.close_settings();
+            self.go_tour(0);
+            return;
+        }
+        ui.add_space(16.0);
+        self.guide_card(ui);
+    }
+
+    fn tab_about(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        ui.horizontal(|ui| {
+            let tex = self.icons.get(ui.ctx(), "app", APP_ICON);
+            ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(72.0, 72.0))));
+            ui.vertical(|ui| {
+                ui.label(RichText::new(format!("CyberCord {VERSION}")).color(c.ink).b().size(20.0));
+                ui.colored_label(c.ink2, "SocioCyberneering Inc. Communication Cooperations");
+            });
+        });
+        ui.add_space(12.0);
+        ui.colored_label(c.ink, self.t("about_body").replace("{v}", VERSION));
+        ui.add_space(10.0);
+        ui.colored_label(c.ink2, RichText::new(self.t("twemoji_credit")).small());
+        ui.colored_label(c.ink2, RichText::new(self.t("fonts_credit")).small());
+    }
+
+    fn tab_voice(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        if !voice::AUDIO_ENABLED {
+            ui.colored_label(c.red, self.t("no_sound_build"));
+            return;
+        }
+        if self.dev_lists.is_none() {
+            self.dev_lists = Some((voice::list_outputs(), voice::list_inputs()));
+        }
+        let (outs, ins) = self.dev_lists.clone().unwrap_or_default();
+        let default = self.t("dev_default").to_string();
+        let shown = |v: &str| if v.is_empty() { default.clone() } else { v.to_string() };
+        let mut dev_changed = false;
+        let mut levels_changed = false;
+        let col_w = ((ui.available_width() - 24.0) / 2.0).max(200.0);
+
+        ui.horizontal_top(|ui| {
+            // input column
+            ui.vertical(|ui| {
+                ui.set_width(col_w);
+                ui.label(RichText::new(self.t("in_dev").to_uppercase()).color(c.ink2).size(12.0).b());
+                ui.add_space(4.0);
+                let mut sel = self.settings.in_dev.clone();
+                egui::ComboBox::from_id_salt("in_dev").selected_text(shown(&sel)).width(col_w - 8.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut sel, String::new(), &default);
+                    for d in &ins {
+                        ui.selectable_value(&mut sel, d.clone(), d);
+                    }
+                });
+                if sel != self.settings.in_dev {
+                    self.settings.in_dev = sel;
+                    dev_changed = true;
+                }
+                ui.add_space(14.0);
+                ui.label(RichText::new(self.t("in_vol").to_uppercase()).color(c.ink2).size(12.0).b());
+                ui.spacing_mut().slider_width = col_w - 80.0;
+                if ui.add(egui::Slider::new(&mut self.settings.in_vol, 0.0..=200.0).step_by(1.0).fixed_decimals(0).suffix(" %")).changed() {
+                    levels_changed = true;
+                }
+            });
+            ui.add_space(24.0);
+            // output column
+            ui.vertical(|ui| {
+                ui.set_width(col_w);
+                ui.label(RichText::new(self.t("out_dev").to_uppercase()).color(c.ink2).size(12.0).b());
+                ui.add_space(4.0);
+                let mut sel = self.settings.out_dev.clone();
+                egui::ComboBox::from_id_salt("out_dev").selected_text(shown(&sel)).width(col_w - 8.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut sel, String::new(), &default);
+                    for d in &outs {
+                        ui.selectable_value(&mut sel, d.clone(), d);
+                    }
+                });
+                if sel != self.settings.out_dev {
+                    self.settings.out_dev = sel;
+                    dev_changed = true;
+                }
+                ui.add_space(14.0);
+                ui.label(RichText::new(self.t("out_vol").to_uppercase()).color(c.ink2).size(12.0).b());
+                ui.spacing_mut().slider_width = col_w - 80.0;
+                if ui.add(egui::Slider::new(&mut self.settings.out_vol, 0.0..=200.0).step_by(1.0).fixed_decimals(0).suffix(" %")).changed() {
+                    levels_changed = true;
+                }
+            });
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.add(egui::Button::new(RichText::new(format!("♪  {}", self.t("test_sound"))).color(c.ink)).fill(c.card).rounding(Rounding::same(8.0))).clicked() {
+                let (rate, pcm) = voice_rec::chime();
+                self.test_player = voice_rec::play(rate, pcm).map(|p| (p, Instant::now()));
+            }
+            if ui.add(egui::Button::new(RichText::new(self.t("dev_refresh")).color(c.ink2)).frame(false)).clicked() {
+                self.dev_lists = None;
+            }
+        });
+        ui.colored_label(c.ink2, RichText::new(self.t("dev_note")).small());
+
+        // ---- mic test with live waveform ----
+        ui.add_space(22.0);
+        sep(ui);
+        ui.add_space(6.0);
+        ui.label(RichText::new(self.t("mic_check_h").to_uppercase()).color(c.ink2).size(12.0).b());
+        ui.add_space(2.0);
+        ui.colored_label(c.ink2, self.t("mic_check_hint"));
+        ui.add_space(8.0);
+        let testing = self.monitor.is_some();
+        ui.horizontal(|ui| {
+            let (label, fill) = if testing { (self.t("mic_check_stop"), c.red) } else { (self.t("mic_check_btn"), c.accent) };
+            if ui.add(egui::Button::new(RichText::new(label).color(c.on_accent).b()).fill(fill).rounding(Rounding::same(8.0)).min_size(egui::vec2(150.0, 36.0))).clicked() {
+                if testing {
+                    self.monitor = None;
+                } else {
+                    self.mic_heard = 0.0;
+                    self.mic_test_msg = None;
+                    self.music.player = None;
+                    self.monitor = voice_rec::Monitor::start();
+                    self.set_opened = Instant::now() - Duration::from_secs(1);
+                    if self.monitor.is_none() {
+                        self.mic_test_msg = Some("vm_no_mic");
+                    }
+                }
+            }
+        });
+        ui.add_space(10.0);
+        let peaks = self.monitor.as_ref().map(|m| m.recent()).unwrap_or_default();
+        let level = peaks.iter().rev().take(5).fold(0f32, |m, v| m.max(*v));
+        self.mic_heard = self.mic_heard.max(peaks.iter().fold(0f32, |m, v| m.max(*v)));
+        let th_now = voice::gate_threshold();
+        waveform(ui, &peaks, th_now, testing);
+        if testing {
+            ui.ctx().request_repaint_after(Duration::from_millis(30));
+            // nothing heard after 4 s → say so
+            if self.set_opened.elapsed() > Duration::from_secs(5) && self.mic_heard < 0.01 {
+                self.mic_test_msg = Some("mic_silent");
+            } else if self.mic_heard >= 0.01 {
+                self.mic_test_msg = None;
+            }
+        }
+        if let Some(k) = self.mic_test_msg {
+            ui.colored_label(c.red, self.t(k));
+        }
+
+        // ---- input sensitivity ----
+        ui.add_space(22.0);
+        ui.label(RichText::new(self.t("sens_h").to_uppercase()).color(c.ink2).size(12.0).b());
+        ui.add_space(4.0);
+        let auto_label = self.t("sens_auto");
+        if ui.checkbox(&mut self.settings.sens_auto, auto_label).changed() {
+            levels_changed = true;
+        }
+        ui.add_space(6.0);
+        if let Some(db) = sensitivity_bar(ui, level, if self.settings.sens_auto { None } else { Some(self.settings.sens_db) }, th_now) {
+            self.settings.sens_db = db;
+            levels_changed = true;
+        }
+        ui.colored_label(c.ink2, RichText::new(self.t("sens_hint")).small());
+
+        if levels_changed {
+            self.settings.apply_levels();
+        }
+        if dev_changed {
+            store::save_settings(&self.settings);
+            voice::set_devices(Some(self.settings.in_dev.clone()), Some(self.settings.out_dev.clone()));
+            self.music.player = None;
+            if self.monitor.is_some() {
+                self.monitor = voice_rec::Monitor::start();
+            }
+            if let Some((g, ch)) = self.in_voice.as_deref().and_then(|r| r.split_once('/')) {
+                let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::new(g, ch) });
+                if self.mic_on {
+                    let _ = self.handle.cmd_tx.send(Cmd::SetMic(true));
+                }
+            }
+        }
+        if self.test_player.as_ref().map(|(_, t)| t.elapsed() > Duration::from_secs(7)).unwrap_or(false) {
+            self.test_player = None;
+        }
+    }
+}
+
+/// A clickable mini preview of a theme.
+fn theme_card(ui: &mut egui::Ui, p: &theme::Palette, name: &str, active: bool) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(200.0, 158.0), egui::Sense::click());
+    let cur = th();
+    let painter = ui.painter();
+    let prev = Rect::from_min_size(r.min, egui::vec2(200.0, 118.0));
+    let ring = if active { cur.accent } else if resp.hovered() { cur.ink2 } else { cur.line };
+    painter.rect_filled(prev, Rounding::same(10.0), p.window);
+    // rail with server dots
+    let rail = Rect::from_min_size(prev.min, egui::vec2(26.0, prev.height()));
+    painter.rect_filled(rail, Rounding { nw: 10.0, sw: 10.0, ne: 0.0, se: 0.0 }, p.rail);
+    for (i, col) in [p.accent, p.green, p.red, p.peri].iter().enumerate() {
+        painter.circle_filled(egui::pos2(rail.center().x, prev.min.y + 16.0 + i as f32 * 22.0), 7.5, *col);
+    }
+    // channel column
+    let side = Rect::from_min_size(egui::pos2(rail.max.x, prev.min.y), egui::vec2(52.0, prev.height()));
+    painter.rect_filled(side, Rounding::ZERO, p.surface);
+    for i in 0..5 {
+        let y = prev.min.y + 14.0 + i as f32 * 16.0;
+        let w = [34.0, 28.0, 38.0, 24.0, 30.0][i];
+        if i == 1 {
+            painter.rect_filled(Rect::from_min_size(egui::pos2(side.min.x + 4.0, y - 5.0), egui::vec2(44.0, 13.0)), Rounding::same(3.0), p.sel);
+        }
+        painter.rect_filled(Rect::from_min_size(egui::pos2(side.min.x + 8.0, y - 2.0), egui::vec2(w, 5.0)), Rounding::same(2.5), if i == 1 { p.ink } else { p.ink2 });
+    }
+    // chat
+    let chat_x = side.max.x + 10.0;
+    for i in 0..3 {
+        let y = prev.min.y + 16.0 + i as f32 * 28.0;
+        painter.circle_filled(egui::pos2(chat_x + 6.0, y + 4.0), 6.0, [p.accent, p.green, p.peri][i]);
+        painter.rect_filled(Rect::from_min_size(egui::pos2(chat_x + 16.0, y - 1.0), egui::vec2(36.0, 5.0)), Rounding::same(2.5), p.ink);
+        painter.rect_filled(Rect::from_min_size(egui::pos2(chat_x + 16.0, y + 8.0), egui::vec2([80.0, 62.0, 70.0][i], 5.0)), Rounding::same(2.5), p.ink2);
+    }
+    // composer + send button
+    let comp = Rect::from_min_size(egui::pos2(chat_x, prev.max.y - 22.0), egui::vec2(prev.max.x - chat_x - 8.0, 14.0));
+    painter.rect_filled(comp, Rounding::same(4.0), p.card);
+    painter.rect_filled(Rect::from_min_size(egui::pos2(comp.max.x - 26.0, comp.min.y + 2.0), egui::vec2(24.0, 10.0)), Rounding::same(3.0), p.accent);
+    if p.mono {
+        painter.text(egui::pos2(chat_x + 2.0, prev.max.y - 36.0), Align2::LEFT_CENTER, "$ _", egui::FontId::monospace(10.0), p.accent);
+    }
+    painter.rect_stroke(prev, Rounding::same(10.0), Stroke::new(if active { 2.5 } else { 1.0 }, ring));
+    if active {
+        let cc = prev.right_top() + egui::vec2(-14.0, 14.0);
+        painter.circle_filled(cc, 9.0, cur.accent);
+        painter.line_segment([cc + egui::vec2(-4.0, 0.0), cc + egui::vec2(-1.0, 3.0)], Stroke::new(2.0, cur.on_accent));
+        painter.line_segment([cc + egui::vec2(-1.0, 3.0), cc + egui::vec2(4.5, -3.5)], Stroke::new(2.0, cur.on_accent));
+    }
+    let font = if active { egui::FontId::new(14.0, egui::FontFamily::Name("bold".into())) } else { egui::FontId::proportional(14.0) };
+    painter.text(egui::pos2(r.min.x + 2.0, prev.max.y + 18.0), Align2::LEFT_CENTER, name, font, if active { cur.ink } else { cur.ink2 });
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// Scrolling mirrored waveform of the last few seconds of microphone loudness.
+/// Bars above the sensitivity threshold are green (would be sent).
+fn waveform(ui: &mut egui::Ui, peaks: &[f32], threshold: f32, live: bool) {
+    let c = th();
+    let w = ui.available_width().min(760.0);
+    let (r, _) = ui.allocate_exact_size(egui::vec2(w, 110.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(r, Rounding::same(12.0), c.card);
+    let inner = r.shrink2(egui::vec2(12.0, 10.0));
+    let mid = inner.center().y;
+    painter.line_segment([egui::pos2(inner.min.x, mid), egui::pos2(inner.max.x, mid)], Stroke::new(1.0, c.line));
+    // threshold lines
+    let amp = |v: f32| (v.sqrt() * inner.height() / 2.0).min(inner.height() / 2.0);
+    let ty = amp(threshold);
+    for y in [mid - ty, mid + ty] {
+        let mut x = inner.min.x;
+        while x < inner.max.x {
+            painter.line_segment([egui::pos2(x, y), egui::pos2((x + 6.0).min(inner.max.x), y)], Stroke::new(1.0, c.ink2.gamma_multiply(0.6)));
+            x += 11.0;
+        }
+    }
+    let bar = 4.0;
+    let n = (inner.width() / bar) as usize;
+    // 400 buckets of 10 ms → n bars, newest on the right
+    let src = peaks.len();
+    for i in 0..n {
+        let idx = (i as f32 / n as f32 * 400.0) as usize;
+        let from_end = 400usize.saturating_sub(idx);
+        if from_end > src {
+            continue;
+        }
+        let j = src - from_end;
+        let a = (j.saturating_sub(1)..(j + 1).min(src)).fold(0f32, |m, k| m.max(peaks[k]));
+        let h = amp(a).max(1.0);
+        let x = inner.min.x + i as f32 * bar + bar / 2.0;
+        let col = if a >= threshold { c.green } else { c.ink2.gamma_multiply(0.7) };
+        painter.line_segment([egui::pos2(x, mid - h), egui::pos2(x, mid + h)], Stroke::new(bar - 1.2, col));
+    }
+    if !live && peaks.is_empty() {
+        painter.text(r.center(), Align2::CENTER_CENTER, "—", egui::FontId::proportional(18.0), c.ink2);
+    }
+}
+
+/// Discord-style sensitivity bar: live level behind a draggable threshold
+/// marker (dBFS, -100..0). Returns the new threshold if the user dragged it.
+fn sensitivity_bar(ui: &mut egui::Ui, level: f32, manual_db: Option<f32>, auto_threshold: f32) -> Option<f32> {
+    let c = th();
+    let w = ui.available_width().min(760.0);
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), if manual_db.is_some() { egui::Sense::click_and_drag() } else { egui::Sense::hover() });
+    let track = Rect::from_center_size(r.center(), egui::vec2(r.width() - 16.0, 10.0));
+    let to_x = |db: f32| track.min.x + ((db + 100.0) / 100.0).clamp(0.0, 1.0) * track.width();
+    let th_db = manual_db.unwrap_or_else(|| voice::lin_to_db(auto_threshold));
+    let lvl_db = voice::lin_to_db(level);
+    let painter = ui.painter();
+    painter.rect_filled(track, Rounding::same(5.0), c.card);
+    // level fill: amber below the threshold, green above
+    let lx = to_x(lvl_db);
+    let tx = to_x(th_db);
+    if lx > track.min.x {
+        let amber = Color32::from_rgb(0xF0, 0xB2, 0x32);
+        painter.rect_filled(Rect::from_min_max(track.min, egui::pos2(lx.min(tx), track.max.y)), Rounding::same(5.0), amber);
+        if lx > tx {
+            painter.rect_filled(Rect::from_min_max(egui::pos2(tx, track.min.y), egui::pos2(lx, track.max.y)), Rounding::same(5.0), c.green);
+        }
+    }
+    // marker
+    let enabled = manual_db.is_some();
+    let knob = Rect::from_center_size(egui::pos2(tx, r.center().y), egui::vec2(10.0, 24.0));
+    painter.rect_filled(knob, Rounding::same(3.0), if enabled { c.ink } else { c.ink2.gamma_multiply(0.6) });
+    painter.text(egui::pos2(track.max.x, r.min.y - 2.0), Align2::RIGHT_BOTTOM, format!("{th_db:.0} dB"), egui::FontId::proportional(11.0), c.ink2);
+    if enabled && (resp.dragged() || resp.clicked()) {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let db = ((pos.x - track.min.x) / track.width() * 100.0 - 100.0).clamp(-100.0, 0.0);
+            return Some(db.round());
+        }
+    }
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    None
+}
+
+// ---- network map + people search ----
+
+#[derive(Default)]
+struct MapState {
+    /// Smoothed position of each node, relative to the map centre (in points).
+    pos: HashMap<String, Vec2>,
+    selected: Option<String>,
+}
+
+fn hash01(s: &str, salt: u32) -> f32 {
+    let h = s.bytes().fold(2166136261u32 ^ salt, |a, b| (a ^ b as u32).wrapping_mul(16777619));
+    (h % 10_000) as f32 / 10_000.0
+}
+
+const NETWORK_TILE: &[u8] = include_bytes!("../assets/servers/network.png");
+
+impl CyberApp {
+    fn ago(&self, ms: u64) -> String {
+        let d = now_ms().saturating_sub(ms) / 1000;
+        if d < 3600 {
+            self.t("ago_min").replace("{n}", &(d / 60).max(1).to_string())
+        } else if d < 86_400 {
+            self.t("ago_h").replace("{n}", &(d / 3600).to_string())
+        } else {
+            self.t("ago_d").replace("{n}", &(d / 86_400).to_string())
+        }
+    }
+
+    fn src_label(&self, src: &str) -> &'static str {
+        match src {
+            "lan" => self.t("src_lan"),
+            "saved" => self.t("src_saved"),
+            "friend" => self.t("src_friend"),
+            "node" => self.t("src_node"),
+            "dht" => self.t("src_dht"),
+            "identify" => self.t("src_identify"),
+            "search" => self.t("src_search"),
+            "global" => self.t("src_global"),
+            _ => self.t("src_exchange"),
+        }
+    }
+
+    fn link_label(&self, link: &str) -> &'static str {
+        match link {
+            "lan" => self.t("link_lan"),
+            "relay" => self.t("link_relay"),
+            _ => self.t("link_direct"),
+        }
+    }
+
+    /// Add as friend (if needed) and open the conversation.
+    fn befriend(&mut self, peer: &str, name: &str, open_dm: bool) {
+        if !self.friends.contains_key(peer) {
+            let _ = self.handle.cmd_tx.send(Cmd::AddFriend(Friend { peer_id: peer.to_string(), name: name.to_string(), addrs: Vec::new() }));
+            self.friends.insert(peer.to_string(), FriendView { name: name.to_string(), online: false });
+            let m = self.t("added").replace("{name}", name);
+            self.toast(m);
+        }
+        if open_dm {
+            self.dm_open = Some(peer.to_string());
+            self.show_friends = true;
+            self.show_home = false;
+            self.show_map = false;
+        }
+    }
+
+    /// Search box + results; used on the Friends page and the map.
+    fn people_search(&mut self, ui: &mut egui::Ui, compact: bool) {
+        let c = th();
+        let hint = self.t("find_hint");
+        let resp = ui.add(egui::TextEdit::singleline(&mut self.search_q).hint_text(format!("🔍  {hint}")).desired_width(f32::INFINITY));
+        if resp.changed() {
+            self.search_res.clear();
+            let _ = self.handle.cmd_tx.send(Cmd::Search(self.search_q.clone()));
+        }
+        if self.search_q.trim().is_empty() {
+            return;
+        }
+        ui.add_space(6.0);
+        if self.search_res.is_empty() {
+            ui.colored_label(c.ink2, RichText::new(self.t("find_none")).small());
+            return;
+        }
+        let res = self.search_res.clone();
+        let max = if compact { 6 } else { 20 };
+        for u in res.iter().take(max) {
+            ui.horizontal(|ui| {
+                let initial = u.name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                avatar(ui, &initial, 15.0, name_color(&u.name), u.online.then_some(c.green));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(&u.name).color(c.ink).b());
+                    let status = if u.online { self.t("lg_online").to_string() } else { self.t("last_seen").replace("{t}", &self.ago(u.last_seen_ms)) };
+                    let via = if u.via == "dht" { format!(" · {}", self.t("find_dht")) } else { String::new() };
+                    ui.colored_label(c.ink2, RichText::new(format!("{status} · {}{via}", short(&u.peer))).small());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.friends.contains_key(&u.peer) {
+                        if ui.add(egui::Button::new(RichText::new(self.t("node_msg")).color(c.on_accent)).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                            self.befriend(&u.peer, &u.name, true);
+                        }
+                    } else {
+                        if ui.add(egui::Button::new(RichText::new(self.t("node_msg")).color(c.ink)).fill(c.card).rounding(Rounding::same(8.0))).clicked() {
+                            self.befriend(&u.peer, &u.name, true);
+                        }
+                        if ui.add(egui::Button::new(RichText::new(self.t("node_add")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                            self.befriend(&u.peer, &u.name, false);
+                        }
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
+    }
+
+    fn map_view(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        let time = ui.input(|i| i.time) as f32;
+        let nodes = self.nodes.clone();
+        let online = nodes.iter().filter(|n| n.online && n.name.is_some()).count();
+        let connected = nodes.iter().filter(|n| n.connected).count();
+        // header
+        ui.horizontal(|ui| {
+            let tex = self.icons.get(ui.ctx(), "network", NETWORK_TILE);
+            ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(30.0, 30.0))));
+            ui.vertical(|ui| {
+                ui.label(RichText::new(self.t("map_title")).color(c.ink).b().size(19.0));
+                ui.colored_label(c.ink2, RichText::new(self.t("map_sub")).small());
+            });
+        });
+        ui.add_space(6.0);
+        let side_w = 300.0;
+        let avail = ui.available_size();
+        ui.horizontal_top(|ui| {
+            // ---------- canvas ----------
+            let size = egui::vec2((avail.x - side_w - 12.0).max(300.0), avail.y.max(300.0));
+            let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, Rounding::same(14.0), c.surface);
+            let center = rect.center();
+            let m = rect.width().min(rect.height());
+            // orbit guides
+            for (k, a) in [(0.27, 0.5), (0.37, 0.35), (0.45, 0.25)] {
+                painter.circle_stroke(center, m * k, Stroke::new(1.0, c.line.gamma_multiply(a + 0.3)));
+            }
+            // radar waves from you (the app is looking for nodes)
+            for i in 0..3 {
+                let ph = ((time * 0.45 + i as f32 / 3.0) % 1.0) as f32;
+                painter.circle_stroke(center, 22.0 + ph * m * 0.48, Stroke::new(2.0, c.accent.gamma_multiply((1.0 - ph) * 0.35)));
+            }
+            // positions (stable angle per node, slow drift)
+            let shown: Vec<&cybercord_node::types::NodeInfo> = nodes.iter().take(160).collect();
+            // Evenly spread each orbit, ordered by a stable per-node angle (no overlaps).
+            let ring_of = |n: &cybercord_node::types::NodeInfo| if n.connected { 0 } else if n.online { 1 } else { 2 };
+            let mut slot: HashMap<String, (usize, usize)> = HashMap::new();
+            for ring in 0..3 {
+                let mut ids: Vec<&str> = shown.iter().filter(|n| ring_of(n) == ring).map(|n| n.peer.as_str()).collect();
+                ids.sort_by(|a, b| hash01(a, 1).total_cmp(&hash01(b, 1)));
+                let total = ids.len();
+                for (i, id) in ids.into_iter().enumerate() {
+                    slot.insert(id.to_string(), (i, total));
+                }
+            }
+            let mut placed: Vec<(String, Pos2, f32)> = Vec::new();
+            for n in &shown {
+                let ring = [0.27, 0.37, 0.45][ring_of(n)];
+                let (i, total) = slot.get(&n.peer).copied().unwrap_or((0, 1));
+                let ang = std::f32::consts::TAU * (i as f32 / total.max(1) as f32) + ring_of(n) as f32 * 0.5 + time * 0.015;
+                let jitter = if ring_of(n) == 2 { (hash01(&n.peer, 7) - 0.5) * 0.04 } else { 0.0 };
+                let target = egui::vec2(ang.cos(), ang.sin()) * m * (ring + jitter);
+                let p = self.map.pos.entry(n.peer.clone()).or_insert(target * 1.3);
+                *p += (target - *p) * 0.08;
+                let r = if n.connected { 15.0 } else if n.online { 10.0 } else { 6.5 };
+                placed.push((n.peer.clone(), center + *p, r));
+            }
+            // edges
+            for (n, (_, pos, _)) in shown.iter().zip(placed.iter()) {
+                if n.connected {
+                    let col = match n.link {
+                        "lan" => c.green,
+                        "relay" => Color32::from_rgb(0x91, 0x41, 0xAC),
+                        _ => c.accent,
+                    };
+                    if n.link == "relay" {
+                        let d = *pos - center;
+                        let len = d.length();
+                        let mut t = 0.0;
+                        while t < len {
+                            let a = center + d * (t / len);
+                            let b = center + d * ((t + 7.0).min(len) / len);
+                            painter.line_segment([a, b], Stroke::new(2.0, col));
+                            t += 12.0;
+                        }
+                    } else {
+                        painter.line_segment([center, *pos], Stroke::new(2.2, col.gamma_multiply(0.8)));
+                    }
+                    // a little packet travelling along the link: the connection is alive
+                    let ph = (time * 0.6 + hash01(&n.peer, 3)) % 1.0;
+                    painter.circle_filled(center + (*pos - center) * ph, 2.5, col);
+                }
+            }
+            // hover / click
+            let pointer = resp.hover_pos();
+            let hovered = pointer.and_then(|pp| placed.iter().filter(|(_, p, r)| p.distance(pp) <= r + 5.0).min_by(|a, b| a.1.distance(pp).total_cmp(&b.1.distance(pp))).map(|(id, _, _)| id.clone()));
+            if resp.clicked() {
+                self.map.selected = hovered.clone();
+            }
+            // nodes
+            for (n, (id, pos, r)) in shown.iter().zip(placed.iter()) {
+                let name = n.name.clone().unwrap_or_default();
+                let base = if n.name.is_some() { name_color(&name) } else { c.ink2 };
+                let fill = if n.connected { base } else if n.online { base.gamma_multiply(0.6) } else { c.line };
+                let sel = self.map.selected.as_deref() == Some(id.as_str());
+                let hov = hovered.as_deref() == Some(id.as_str());
+                if sel || hov {
+                    painter.circle_stroke(*pos, r + 5.0, Stroke::new(2.0, c.accent));
+                }
+                if n.relays_us || n.we_relay {
+                    painter.circle_stroke(*pos, r + 2.5, Stroke::new(1.5, Color32::from_rgb(0x91, 0x41, 0xAC)));
+                }
+                painter.circle_filled(*pos, *r, fill);
+                if self.friends.contains_key(id) {
+                    painter.circle_filled(*pos + egui::vec2(r * 0.75, -r * 0.75), 4.0, c.green);
+                }
+                if *r >= 10.0 {
+                    let initial = name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
+                    painter.text(*pos, Align2::CENTER_CENTER, initial, egui::FontId::new(r * 0.95, egui::FontFamily::Name("bold".into())), c.on_accent);
+                }
+                if n.connected || sel || hov {
+                    let label = if name.is_empty() { short(id) } else { name.clone() };
+                    painter.text(*pos + egui::vec2(0.0, r + 9.0), Align2::CENTER_CENTER, label, egui::FontId::proportional(12.0), c.ink);
+                }
+            }
+            // you
+            painter.circle_filled(center, 22.0, c.accent);
+            painter.circle_stroke(center, 25.0, Stroke::new(2.0, c.accent.gamma_multiply(0.5)));
+            let me = self.self_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+            painter.text(center, Align2::CENTER_CENTER, me, egui::FontId::new(20.0, egui::FontFamily::Name("bold".into())), c.on_accent);
+            painter.text(center + egui::vec2(0.0, 36.0), Align2::CENTER_CENTER, self.t("lg_you"), egui::FontId::new(12.0, egui::FontFamily::Name("bold".into())), c.ink);
+            if shown.is_empty() {
+                painter.text(center + egui::vec2(0.0, 64.0), Align2::CENTER_CENTER, self.t("map_empty"), egui::FontId::proportional(14.0), c.ink2);
+            }
+            if let Some(h) = &hovered {
+                if let Some(n) = nodes.iter().find(|n| &n.peer == h) {
+                    let mut tip = n.name.clone().unwrap_or_else(|| self.t("node_unknown").to_string());
+                    if n.connected {
+                        tip.push_str(&format!("\n{}", self.link_label(n.link)));
+                    }
+                    tip.push_str(&format!("\n{}", self.t("found_via").replace("{s}", self.src_label(n.source))));
+                    resp.clone().on_hover_text_at_pointer(tip);
+                }
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ui.ctx().request_repaint_after(Duration::from_millis(33));
+
+            // ---------- side column ----------
+            ui.vertical(|ui| {
+                ui.set_width(side_w);
+                egui::ScrollArea::vertical().id_salt("map_side").max_height(avail.y).show(ui, |ui| {
+                    card(ui, self.t("map_title"), |ui| {
+                        ui.label(
+                            RichText::new(self.t("map_people").replace("{o}", &online.to_string()).replace("{k}", &nodes.len().to_string()).replace("{c}", &connected.to_string()))
+                                .color(c.ink),
+                        );
+                        ui.add_space(6.0);
+                        let legend = [
+                            (c.accent, self.t("lg_you"), false),
+                            (c.green, self.t("link_lan"), true),
+                            (c.accent, self.t("link_direct"), true),
+                            (Color32::from_rgb(0x91, 0x41, 0xAC), self.t("link_relay"), true),
+                            (c.line, self.t("lg_known"), false),
+                        ];
+                        for (col, label, line) in legend {
+                            ui.horizontal(|ui| {
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(22.0, 14.0), egui::Sense::hover());
+                                if line {
+                                    ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(2.5, col));
+                                } else {
+                                    ui.painter().circle_filled(r.center(), 6.0, col);
+                                }
+                                ui.colored_label(c.ink2, RichText::new(label).small());
+                            });
+                        }
+                        ui.add_space(6.0);
+                        if ui.add(egui::Button::new(RichText::new(self.t("scan_now")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                            let _ = self.handle.cmd_tx.send(Cmd::Rescan);
+                        }
+                    });
+                    ui.add_space(10.0);
+                    if let Some(sel) = self.map.selected.clone() {
+                        if let Some(n) = nodes.iter().find(|n| n.peer == sel).cloned() {
+                            let title = n.name.clone().unwrap_or_else(|| self.t("node_unknown").to_string());
+                            card(ui, &title, |ui| {
+                                ui.colored_label(c.ink2, RichText::new(short(&n.peer)).monospace().small());
+                                let status = if n.connected {
+                                    format!("{} — {}", self.t("lg_conn"), self.link_label(n.link))
+                                } else if n.online {
+                                    self.t("lg_online").to_string()
+                                } else {
+                                    self.t("last_seen").replace("{t}", &self.ago(n.last_seen_ms))
+                                };
+                                ui.colored_label(c.ink, status);
+                                ui.colored_label(c.ink2, self.t("found_via").replace("{s}", self.src_label(n.source)));
+                                if n.relays_us {
+                                    ui.colored_label(c.ink2, self.t("relays_us"));
+                                }
+                                if n.we_relay {
+                                    ui.colored_label(c.ink2, self.t("we_relay"));
+                                }
+                                ui.add_space(6.0);
+                                if let Some(name) = &n.name {
+                                    ui.horizontal(|ui| {
+                                        if self.friends.contains_key(&n.peer) {
+                                            ui.colored_label(c.green_text, format!("✔ {}", self.t("node_friend")));
+                                        } else if ui.add(egui::Button::new(RichText::new(self.t("node_add")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                                            self.befriend(&n.peer, name, false);
+                                        }
+                                        if ui.add(egui::Button::new(RichText::new(self.t("node_msg")).color(c.on_accent)).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                                            self.befriend(&n.peer, name, true);
+                                        }
+                                    });
+                                }
+                            });
+                            ui.add_space(10.0);
+                        }
+                    }
+                    card(ui, self.t("find_people"), |ui| {
+                        self.people_search(ui, true);
+                    });
+                });
+            });
+        });
+    }
+}
