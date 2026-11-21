@@ -1,0 +1,71 @@
+# Builds CyberCord for Linux and Windows and publishes a GitHub release
+# whenever a tag like v0.10.0 is pushed (or when run by hand).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - name: Test
+        run: cargo test --release
+      - name: Build (with sound) and fallback (no sound)
+        run: |
+          cargo build --release --features voice,camera
+          cargo build --release --features camera --target-dir target-nosound
+      - name: Package
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          [ "$V" = "$GITHUB_REF_NAME" ] && V="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          D="cybercord-$V-linux-x86_64"
+          mkdir -p "$D/assets"
+          cp target/release/cybercord "$D/cybercord"
+          cp target-nosound/release/cybercord "$D/cybercord-nosound"
+          cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/cybercord.desktop "$D/"
+          cp assets/icon-256.png "$D/cybercord.png"
+          cp assets/icon.svg "$D/cybercord.svg"
+          cp -r docs README.md CHANGELOG.md THIRD_PARTY.md assets/fonts/LICENSE-Inter.txt "$D/"
+          tar czf "$D.tar.gz" "$D"
+          sha256sum "$D.tar.gz" > "$D.tar.gz.sha256"
+          echo "ASSETS=$D.tar.gz $D.tar.gz.sha256" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            cybercord-*-linux-x86_64.tar.gz
+            cybercord-*-linux-x86_64.tar.gz.sha256
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --features voice,camera
+      - name: Package
+        shell: pwsh
+        run: |
+          $v = "$env:GITHUB_REF_NAME".TrimStart("v")
+          $d = "cybercord-$v-windows-x86_64"
+          New-Item -ItemType Directory -Force "$d" | Out-Null
+          Copy-Item target/release/cybercord.exe "$d/CyberCord.exe"
+          Copy-Item README.md, CHANGELOG.md, THIRD_PARTY.md, assets/fonts/LICENSE-Inter.txt "$d/"
+          Compress-Archive -Path "$d" -DestinationPath "$d.zip"
+          (Get-FileHash "$d.zip" -Algorithm SHA256).Hash.ToLower() + "  $d.zip" | Out-File -Encoding ascii "$d.zip.sha256"
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            cybercord-*-windows-x86_64.zip
+            cybercord-*-windows-x86_64.zip.sha256

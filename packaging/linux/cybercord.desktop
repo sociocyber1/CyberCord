@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CyberCord
+GenericName=Peer-to-peer chat
+Comment=Serverless peer-to-peer chat — SocioCyberneering Inc.
+Exec=cybercord
+Icon=cybercord
+Terminal=false
+Categories=Network;InstantMessaging;
+Keywords=chat;p2p;friends;voice;decentralized;
+StartupWMClass=CyberCord

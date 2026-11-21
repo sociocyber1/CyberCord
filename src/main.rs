@@ -1,3 +1,4 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! CyberCord entry point. GUI by default; `--headless` runs the same network
 //! engine with a terminal front-end. There are no servers: every copy is a node.
 
