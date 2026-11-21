@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.12</h1>
+<h1 align="center">CyberCord 0.13</h1>
 <p align="center"><b>Чат, голос, музыка и видео-кружки без серверов</b> — SocioCyberneering Inc. Communication Cooperations</p>
 
 ## Суть проекта
@@ -75,6 +75,7 @@ CyberCord похож на Discord, но у него нет центрально�
 
 **Документация:**
 
+- [Экстенсиональная переписка](docs/EXTENSIONAL.md) — подсказки, уровни абстракции, решение проблем, свои эмодзи;
 - [Голосовой канал на 100 человек](docs/VOICE-100.md) — как это должно работать;
 - [Как устроен протокол](docs/PROTOCOL.md) — транспорт, поиск нод без серверов,
   темы, сообщения, история, файлы как в торренте, голос, хаб, поиск людей,
@@ -86,7 +87,36 @@ CyberCord похож на Discord, но у него нет центрально�
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
 
-## Что нового в 0.12
+## Что нового в 0.13 — экстенсиональная переписка
+
+Главное внимание — чатам: говорить ближе к фактам и не прыгать к выводам.
+Ничего не блокируется, всё работает локально. Подробно —
+[docs/EXTENSIONAL.md](docs/EXTENSIONAL.md).
+
+- **Выделил слово — подсказка с кнопками:** Индекс₁, Дата (сегодняшняя,
+  Иван²¹·¹¹·²⁰²⁶), «Кавычки», и т.д., через-дефис, «для меня».
+- **Предупреждения до конфликта** прямо при наборе: обобщения, ярлыки на
+  человека, чтение мыслей, «или-или», «очевидно», оценки, требования. Если
+  разговор накаляется у нескольких участников — полоса «Сверьте факты,
+  проверьте гипотезы, сделайте паузу».
+- **Наука, а не вера:** признаки догматичного, сектантского разговора
+  («единственная истина», «не задавай вопросов», «учитель всегда прав»…)
+  подсвечиваются с напоминанием о проверке.
+- **Уровни абстракции** у любого сообщения — разбор по структурному
+  дифференциалу: описание, вывод, оценка, с объяснениями.
+- **Решение проблем в чате:** кнопка ＋ — чек-лист, таблица, плюсы и минусы,
+  «шесть шагов» из рабочей тетради, цель SMART, сверка фактов; таблицы и
+  чек-листы отображаются в сообщениях; многострочное поле (Shift+Enter).
+- **Свои эмодзи** по общей семантике и SocioCyberneering (20 штук) и пять
+  анимированных стикеров.
+
+![Подсказка на выделенном слове и полоса «разговор накаляется»](docs/img/screen-ext-tip.png)
+
+![Уровни абстракции](docs/img/screen-levels.png)
+
+![Свои эмодзи и стикер](docs/img/screen-sce-stickers.png)
+
+## Что было в 0.12
 
 - **Правка и удаление своих сообщений.** Наведите на своё сообщение: ✎ —
   изменить, 🗑 — удалить (второй клик подтверждает). Стрелка ↑ в пустом поле
@@ -320,12 +350,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.12.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.13.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.12.0-linux-x86_64.tar.gz
-cd cybercord-0.12.0-linux-x86_64
+tar xf cybercord-0.13.0-linux-x86_64.tar.gz
+cd cybercord-0.13.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -520,11 +550,13 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
   (`assets/fonts/LICENSE-Inter.txt`).
 - Иконки серверов и иллюстрации: SocioCyberneering Inc., нарисованы для
   CyberCord (`tools/make_icons.py`, `tools/make_guide.py`,
-  `tools/make_docs_art.py`, `tools/make_readme_art.py`).
+  `tools/make_docs_art.py`, `tools/make_readme_art.py`, `tools/make_emoji.py`, `tools/make_gifs.py`).
 
 ---
 
 ### English (short)
+
+**0.13 — extensional chat:** select a word for an index₁, today's date, safety quotes, etc., hyphen or "to me"; live hints for allness, labels on people, mind reading, either-or, jumping to conclusions, loaded evaluations and demands; a "the conversation is heating up — check facts, test hypotheses" banner; dogmatic/cult-like wordings flagged ("we go by science"); a "levels of abstraction" view per message (structural differential: description / inference / evaluation); problem-solving blocks (check lists, tables, pros/cons, six steps, SMART, fact check) rendered in chat; multi-line composer; 20 own general-semantics/SocioCyberneering emoji and 5 animated stickers. Nothing is blocked; everything runs locally ([details, ru](docs/EXTENSIONAL.md)).
 
 **0.12:** edit and delete your own messages (hover ✎/🗑, ↑ to edit the last one). Edited messages show a version index and date, general-semantics style ("edited₂ · 21.11 18:10"), with all versions on hover. Every message is now signed by its author, so edits and deletes are accepted only from the author, even when history is relayed by other nodes. Local time in chat.
 

@@ -13,6 +13,7 @@ use eframe::egui::{self, load::SizedTexture, Align2, Color32, Id, LayerId, Order
 use cybercord_node::net::{self, Cmd, NetConfig, NetStats, NetworkHandle, UiEvent, MAX_BLOB};
 use cybercord_node::servers::SERVERS;
 use cybercord_node::store::{self, Settings};
+use cybercord_node::semantics::{self as sem, Kind, Level};
 use cybercord_node::types::{clock, now_ms, short_date, subscript, parse_connect_code, Attachment, ChannelId, ChatEvent, Friend, MediaKind};
 use cybercord_node::voice;
 
@@ -201,6 +202,16 @@ pub struct CyberApp {
     /// message under the pointer (last frame) and a pending \"delete?\" confirmation
     hover_msg: Option<String>,
     confirm_delete: Option<(String, Instant)>,
+    /// selected text in the composer (char range) for the extensional tip
+    sel: Option<(usize, usize)>,
+    composer_rect: Rect,
+    /// composer height with one line of text
+    composer_base: f32,
+    /// "levels of abstraction" view for one message: (author, text, time)
+    analyze: Option<(String, String, u64)>,
+    /// conversation banners hidden until …
+    banner_hidden: HashMap<ChannelId, Instant>,
+    builtin_gifs: Vec<String>,
     words_toast_at: Option<Instant>,
 }
 
@@ -310,6 +321,12 @@ impl CyberApp {
             focus_input: 0,
             hover_msg: None,
             confirm_delete: None,
+            sel: None,
+            composer_rect: Rect::NOTHING,
+            composer_base: f32::INFINITY,
+            analyze: None,
+            banner_hidden: HashMap::new(),
+            builtin_gifs: Vec::new(),
             words_toast_at: None,
             mic_test_msg: None,
             test_player: None,
@@ -396,6 +413,10 @@ impl CyberApp {
 
     fn t(&self, k: &'static str) -> &'static str {
         i18n::tr(self.lang, k)
+    }
+
+    fn td(&self, k: &str) -> &'static str {
+        i18n::tr_dyn(self.lang, k)
     }
 
     fn toast(&mut self, msg: impl Into<String>) {
@@ -999,6 +1020,7 @@ impl eframe::App for CyberApp {
         self.popups(ctx);
         self.recorder_overlay(ctx);
         self.doc_overlay(ctx);
+        self.analyze_overlay(ctx);
         self.draw_toast(ctx);
         self.draw_tour(ctx);
 
@@ -1573,7 +1595,16 @@ impl CyberApp {
         ui.add_space(4.0);
         sep(ui);
 
-        let input_h = if self.editing.as_ref().map(|e| e.0 == *ch).unwrap_or(false) { 74.0 } else { 50.0 };
+        let hints = sem::scan(&self.input);
+        // the composer grows with its text (measured last frame), up to ~6 lines
+        let mut input_h = 60.0 + (self.composer_rect.height() - self.composer_base).clamp(0.0, 100.0);
+        if self.editing.as_ref().map(|e| e.0 == *ch).unwrap_or(false) {
+            input_h += 24.0;
+        }
+        if !hints.is_empty() && self.settings.words_hints {
+            input_h += 30.0;
+        }
+        self.conversation_banner(ui, ch);
         let avail = ui.available_height() - input_h;
         // (message, what to show after edits); deleted messages are left out
         let msgs: Vec<(ChatEvent, cybercord_node::history::Resolved)> = self
@@ -1585,6 +1616,7 @@ impl CyberApp {
             self.confirm_delete = None;
         }
         let mut action: Option<(bool, String)> = None; // (delete?, id)
+        let mut toggled: Option<(String, String, u32)> = None; // checkbox ticked in my message → edit
         let mut new_hover: Option<String> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(avail).stick_to_bottom(true).show(ui, |ui| {
             if msgs.is_empty() {
@@ -1634,12 +1666,26 @@ impl CyberApp {
                             if icon_button_k(ui, pencil, if editing_this { th().accent } else { th().ink2 }, th().window, 22.0, 0.72).on_hover_text(self.t("edit_msg")).clicked() {
                                 action = Some((false, m.id.clone()));
                             }
+                            let lv = self.icons.get(ui.ctx(), "levels", SYM_LEVELS);
+                            if icon_button_k(ui, lv, th().ink2, th().window, 22.0, 0.72).on_hover_text(self.t("sem_levels")).clicked() {
+                                self.analyze = Some((m.name.clone(), r.body.clone(), r.ts_ms));
+                            }
+                        });
+                    } else if self.hover_msg.as_deref() == Some(m.id.as_str()) && !r.body.trim().is_empty() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(6.0);
+                            let lv = self.icons.get(ui.ctx(), "levels", SYM_LEVELS);
+                            if icon_button_k(ui, lv, th().ink2, th().window, 22.0, 0.72).on_hover_text(self.t("sem_levels")).clicked() {
+                                self.analyze = Some((m.name.clone(), r.body.clone(), r.ts_ms));
+                            }
                         });
                     }
                 });
                 ui.indent(&m.id, |ui| {
                     if !r.body.is_empty() {
-                        self.rich_text(ui, &r.body, th().ink, 14.0);
+                        if let Some(nb) = self.body_view(ui, &m.id, &r.body, editable) {
+                            toggled = Some((m.id.clone(), nb, r.rev + 1));
+                        }
                     }
                     if let Some(a) = &m.attach {
                         self.media_widget(ui, a, ch);
@@ -1657,6 +1703,9 @@ impl CyberApp {
             }
         });
         self.hover_msg = new_hover;
+        if let Some((target, body, rev)) = toggled {
+            let _ = self.handle.cmd_tx.send(Cmd::EditMessage { channel: ch.clone(), target, body: Some(body), rev });
+        }
         match action {
             Some((true, id)) => self.delete_message(ch, &id),
             Some((false, id)) => self.start_edit(ch, &id),
@@ -1688,8 +1737,26 @@ impl CyberApp {
                 }
             }
         }
+        if !hints.is_empty() && self.settings.words_hints {
+            self.hint_strip(ui, &hints);
+        }
         let row = ui.horizontal(|ui| {
             let btns = ui.horizontal(|ui| {
+                ui.menu_button(RichText::new("＋").size(18.0).color(th().ink2), |ui| {
+                    ui.set_min_width(230.0);
+                    for (key, tpl) in templates(self.lang) {
+                        if ui.button(self.t(key)).clicked() {
+                            if !self.input.is_empty() && !self.input.ends_with('\n') {
+                                self.input.push('\n');
+                            }
+                            self.input.push_str(&tpl);
+                            self.focus_input = 3;
+                            ui.close_menu();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(self.t("tpl_tip"));
                 let e_idx = emoji::find_code("slight_smile").unwrap_or(0);
                 let tex = self.emoji.tex(ui.ctx(), e_idx);
                 let e = ui.add(egui::ImageButton::new(SizedTexture::new(tex, egui::vec2(22.0, 22.0))).frame(false)).on_hover_text(self.t("emoji_tip"));
@@ -1721,7 +1788,25 @@ impl CyberApp {
             } else {
                 self.t("message_ch").replace("{ch}", &ch.channel)
             };
-            let resp = ui.add_sized([ui.available_width() - 118.0, 32.0], egui::TextEdit::singleline(&mut self.input).id(Id::new("composer_input")).hint_text(hint));
+            // Enter sends, Shift+Enter starts a new line
+            let input_id = Id::new("composer_input");
+            let focused_before = ui.memory(|m| m.has_focus(input_id));
+            let enter = focused_before && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            let w = ui.available_width() - 118.0;
+            let scroll = egui::ScrollArea::vertical().id_salt("composer_scroll").max_height(132.0).min_scrolled_height(self.composer_rect.height().clamp(32.0, 132.0)).max_width(w).auto_shrink([false, true]).stick_to_bottom(true).show(ui, |ui| {
+                egui::TextEdit::multiline(&mut self.input).id(input_id).hint_text(hint).desired_rows(1).desired_width(w - 12.0).min_size(egui::vec2(0.0, 32.0)).show(ui)
+            });
+            let out = scroll.inner;
+            let resp = out.response.clone();
+            self.composer_rect = Rect::from_min_size(scroll.inner_rect.min, egui::vec2(w, resp.rect.height().min(scroll.content_size.y).clamp(32.0, 132.0)));
+            if !self.input.contains('\n') && self.input.chars().count() < 30 {
+                self.composer_base = self.composer_base.min(self.composer_rect.height());
+            }
+            self.sel = out.cursor_range.and_then(|r| {
+                let a = r.primary.ccursor.index.min(r.secondary.ccursor.index);
+                let b = r.primary.ccursor.index.max(r.secondary.ccursor.index);
+                (b > a && resp.has_focus()).then_some((a, b))
+            }).or(if resp.has_focus() { None } else { self.sel });
             // a click on ✎ ends with "pointer released elsewhere", which drops
             // focus in that same frame, so ask again for a few frames
             if self.focus_input > 0 {
@@ -1736,13 +1821,298 @@ impl CyberApp {
                     self.start_edit(ch, &id);
                 }
             }
-            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if ui.add(egui::Button::new(RichText::new(self.t("send")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(80.0, 32.0))).clicked() || enter {
                 self.send_current();
+                self.sel = None;
                 resp.request_focus();
             }
         });
         self.anchor("composer", row.response.rect.expand(2.0));
+        self.selection_tip(ui.ctx());
+    }
+
+    /// Floating tip over a selection in the composer: extensional devices.
+    fn selection_tip(&mut self, ctx: &egui::Context) {
+        let Some((a, b)) = self.sel else { return };
+        let chars: Vec<char> = self.input.chars().collect();
+        if b > chars.len() || a >= b {
+            self.sel = None;
+            return;
+        }
+        let picked: String = chars[a..b].iter().collect();
+        let mut result: Option<String> = None;
+        let c = th();
+        let lift = if self.settings.words_hints && !sem::scan(&self.input).is_empty() { 74.0 } else { 44.0 };
+        egui::Area::new(Id::new("sel_tip")).order(Order::Foreground).fixed_pos(self.composer_rect.left_top() + egui::vec2(0.0, -lift)).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(c.window).rounding(Rounding::same(10.0)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let now = chrono_today();
+                    let mut btn = |ui: &mut egui::Ui, label: String, tip: &str| ui.add(egui::Button::new(RichText::new(label).color(c.ink)).fill(c.card).rounding(Rounding::same(6.0))).on_hover_text(tip).clicked();
+                    if btn(ui, format!("{}₁", self.t("ext_index")), self.t("ext_index_tip")) {
+                        result = Some(sem::index(&picked));
+                    }
+                    if btn(ui, format!("{}²⁰²⁶", self.t("ext_date")), self.t("ext_date_tip")) {
+                        result = Some(sem::date(&picked, now.0, now.1, now.2));
+                    }
+                    if btn(ui, "«…»".into(), self.t("ext_quote_tip")) {
+                        result = Some(sem::quote(&picked));
+                    }
+                    if btn(ui, self.t("ext_etc").to_string(), self.t("ext_etc_tip")) {
+                        result = Some(format!("{picked} {}", self.t("ext_etc")));
+                    }
+                    if picked.trim().contains(' ') && btn(ui, self.t("ext_hyphen").to_string(), self.t("ext_hyphen_tip")) {
+                        result = Some(sem::hyphen(&picked));
+                    }
+                    if btn(ui, self.t("ext_tome").to_string(), self.t("ext_tome_tip")) {
+                        result = Some(format!("{picked} {}", self.t("ext_tome_text")));
+                    }
+                });
+            });
+        });
+        if let Some(r) = result {
+            let mut s: String = chars[..a].iter().collect();
+            s.push_str(&r);
+            let caret = s.chars().count();
+            s.extend(chars[b..].iter());
+            self.input = s;
+            self.sel = None;
+            self.focus_input = 3;
+            // put the caret after the changed word (drops the old selection)
+            let id = Id::new("composer_input");
+            if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(caret))));
+                st.store(ctx, id);
+            }
+        }
+    }
+
+    /// Live hints under the composer: what in the draft may start a conflict.
+    fn hint_strip(&mut self, ui: &mut egui::Ui, hints: &[sem::Finding]) {
+        let c = th();
+        ui.horizontal(|ui| {
+            ui.set_min_height(26.0);
+            let shown: Vec<&sem::Finding> = {
+                let mut v: Vec<&sem::Finding> = Vec::new();
+                for f in hints {
+                    if !v.iter().any(|x| x.kind == f.kind) {
+                        v.push(f);
+                    }
+                }
+                v.into_iter().take(2).collect()
+            };
+            for f in shown {
+                let col = if f.kind == Kind::Dogma { Color32::from_rgb(0x91, 0x41, 0xac) } else { Color32::from_rgb(0xe5, 0xa5, 0x0a) };
+                let word = if f.text.is_empty() { String::new() } else { format!("«{}» ", f.text) };
+                let label = format!("⚠ {word}{}", self.td(&format!("sem_{}_h", f.kind.key())));
+                egui::Frame::none().fill(col.gamma_multiply(0.14)).rounding(Rounding::same(6.0)).inner_margin(egui::Margin::symmetric(8.0, 3.0)).show(ui, |ui| {
+                    ui.label(RichText::new(label).color(c.ink).small());
+                });
+            }
+        });
+    }
+
+    /// Banner over a conversation that seems to be heating up, or that shows
+    /// dogmatic wordings. Nothing is blocked: it is a reminder to check facts.
+    fn conversation_banner(&mut self, ui: &mut egui::Ui, ch: &ChannelId) {
+        if !self.settings.words_hints {
+            return;
+        }
+        if self.banner_hidden.get(ch).map(|t| t.elapsed() < Duration::from_secs(1800)).unwrap_or(false) {
+            return;
+        }
+        let Some(view) = self.views.get(ch) else { return };
+        let since = now_ms().saturating_sub(15 * 60 * 1000);
+        let recent: Vec<(String, String)> = view
+            .msgs
+            .iter()
+            .rev()
+            .take(10)
+            .filter(|m| m.ts_ms >= since)
+            .map(|m| {
+                let r = cybercord_node::history::resolve(m, &view.edits);
+                (if m.from.is_empty() { m.name.clone() } else { m.from.clone() }, if r.deleted { String::new() } else { r.body })
+            })
+            .collect();
+        let dogma: Option<(String, String, u64)> = view.msgs.iter().rev().take(30).find_map(|m| {
+            let r = cybercord_node::history::resolve(m, &view.edits);
+            (!r.deleted && sem::scan(&r.body).iter().any(|f| f.kind == Kind::Dogma)).then(|| (m.name.clone(), r.body, r.ts_ms))
+        });
+        let (hot, authors) = sem::heat(recent.iter().map(|(a, b)| (a.as_str(), b.as_str())));
+        let heated = hot >= 3 && authors >= 2;
+        if !heated && dogma.is_none() {
+            return;
+        }
+        let c = th();
+        let (col, text) = if heated { (Color32::from_rgb(0xe5, 0xa5, 0x0a), self.t("banner_heat")) } else { (Color32::from_rgb(0x91, 0x41, 0xac), self.t("banner_dogma")) };
+        let mut hide = false;
+        egui::Frame::none().fill(col.gamma_multiply(0.16)).stroke(Stroke::new(1.0, col.gamma_multiply(0.6))).rounding(Rounding::same(8.0)).inner_margin(egui::Margin::symmetric(10.0, 6.0)).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(text).color(c.ink));
+                if heated {
+                    if ui.small_button(self.t("tpl_facts")).clicked() {
+                        self.input.push_str(&templates(self.lang)[5].1);
+                        self.focus_input = 3;
+                    }
+                    if ui.small_button(self.t("tpl_six")).clicked() {
+                        self.input.push_str(&templates(self.lang)[3].1);
+                        self.focus_input = 3;
+                    }
+                }
+                if let Some(d) = &dogma {
+                    if ui.small_button(self.t("sem_levels")).clicked() {
+                        self.analyze = Some(d.clone());
+                    }
+                }
+                if ui.small_button(self.t("banner_hide")).clicked() {
+                    hide = true;
+                }
+            });
+        });
+        ui.add_space(4.0);
+        if hide {
+            self.banner_hidden.insert(ch.clone(), Instant::now());
+        }
+    }
+
+    /// Message text with a small Markdown subset: tables, check lists, lists,
+    /// **bold** lines. Returns a new body if the author ticked a checkbox.
+    fn body_view(&mut self, ui: &mut egui::Ui, id: &str, body: &str, editable: bool) -> Option<String> {
+        let c = th();
+        let lines: Vec<&str> = body.lines().collect();
+        let mut changed: Option<String> = None;
+        let mut i = 0;
+        while i < lines.len() {
+            let l = lines[i];
+            let t = l.trim_start();
+            if t.starts_with('|') {
+                let start = i;
+                while i < lines.len() && lines[i].trim_start().starts_with('|') {
+                    i += 1;
+                }
+                let rows: Vec<Vec<String>> = lines[start..i]
+                    .iter()
+                    .filter(|r| !(r.contains('-') && r.chars().all(|ch| matches!(ch, '|' | '-' | ':' | ' '))))
+                    .map(|r| r.trim().trim_matches('|').split('|').map(|c| c.trim().to_string()).collect())
+                    .collect();
+                egui::Frame::none().stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(6.0)).inner_margin(egui::Margin::same(6.0)).show(ui, |ui| {
+                    egui::Grid::new((id, "tbl", start)).striped(true).spacing(egui::vec2(16.0, 4.0)).show(ui, |ui| {
+                        for (ri, row) in rows.iter().enumerate() {
+                            for cell in row {
+                                let rt = RichText::new(cell.trim_matches('*')).color(c.ink);
+                                ui.label(if ri == 0 { rt.b() } else { rt });
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+                continue;
+            }
+            let check = t.strip_prefix("- [ ]").map(|r| (false, r)).or_else(|| t.strip_prefix("- [x]").or_else(|| t.strip_prefix("- [X]")).map(|r| (true, r)));
+            if let Some((done, rest)) = check {
+                let mut v = done;
+                ui.horizontal(|ui| {
+                    let r = ui.add_enabled(editable, egui::Checkbox::without_text(&mut v));
+                    let text = RichText::new(rest.trim()).color(if done { c.ink2 } else { c.ink });
+                    ui.label(if done { text.strikethrough() } else { text });
+                    if r.changed() {
+                        let mut new: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+                        let indent = &l[..l.len() - t.len()];
+                        new[i] = format!("{indent}- [{}]{rest}", if v { "x" } else { " " });
+                        changed = Some(new.join("\n"));
+                    }
+                });
+            } else if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+                ui.horizontal_top(|ui| {
+                    ui.label(RichText::new("•").color(c.accent));
+                    self.rich_text(ui, rest, c.ink, 14.0);
+                });
+            } else if t.len() > 4 && t.starts_with("**") && t.ends_with("**") {
+                ui.label(RichText::new(t.trim_matches('*')).color(c.ink).b());
+            } else if t.is_empty() {
+                ui.add_space(4.0);
+            } else {
+                self.rich_text(ui, l, c.ink, 14.0);
+            }
+            i += 1;
+        }
+        changed
+    }
+
+    /// "Levels of abstraction" for one message (structural differential).
+    fn analyze_overlay(&mut self, ctx: &egui::Context) {
+        let Some((name, body, ts)) = self.analyze.clone() else { return };
+        let c = th();
+        let screen = ctx.screen_rect();
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        egui::Area::new(Id::new("an_dim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            let r = ui.allocate_rect(screen, egui::Sense::click());
+            ui.painter().rect_filled(screen, Rounding::ZERO, Color32::from_black_alpha(150));
+            if r.clicked() {
+                close = true;
+            }
+        });
+        let w = (screen.width() - 48.0).clamp(320.0, 680.0);
+        let h = (screen.height() - 56.0).min(720.0);
+        let lines = sem::levels(&body);
+        egui::Area::new(Id::new("an_win")).order(Order::Tooltip).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+            egui::Frame::none().fill(c.window).rounding(Rounding::same(14.0)).stroke(Stroke::new(1.0, c.line)).shadow(egui::epaint::Shadow { offset: egui::vec2(0.0, 8.0), blur: 28.0, spread: 0.0, color: Color32::from_black_alpha(90) }).show(ui, |ui| {
+                ui.set_width(w);
+                ui.set_height(h);
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.set_height(48.0);
+                    ui.label(RichText::new(self.t("sem_levels")).color(c.ink).size(16.0).b());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(12.0);
+                        if ui.add(egui::Button::new(RichText::new(self.t("close")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(96.0, 30.0))).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add(egui::Separator::default().spacing(0.0));
+                egui::ScrollArea::vertical().id_salt("an_scroll").auto_shrink([false, false]).show(ui, |ui| {
+                    egui::Frame::none().inner_margin(egui::Margin { left: 24.0, right: 24.0, top: 16.0, bottom: 20.0 }).show(ui, |ui| {
+                        ui.set_width(w - 48.0);
+                        let tex = self.icons.get(ui.ctx(), "doc_sd", DOC_SD);
+                        ui.vertical_centered(|ui| {
+                            ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(w.min(560.0) - 48.0, (w.min(560.0) - 48.0) * 260.0 / 560.0))).rounding(Rounding::same(12.0)));
+                        });
+                        ui.add_space(8.0);
+                        ui.add(egui::Label::new(RichText::new(self.t("sem_intro")).color(c.ink2)).wrap());
+                        ui.add_space(10.0);
+                        ui.label(RichText::new(format!("{name} · {}", short_date(ts))).color(c.ink2).small());
+                        ui.add_space(4.0);
+                        for line in &lines {
+                            let (col, key) = match line.level {
+                                Level::Description => (c.green, "lvl_desc"),
+                                Level::Inference => (Color32::from_rgb(0xe6, 0x61, 0x00), "lvl_infer"),
+                                Level::Evaluation => (c.red, "lvl_eval"),
+                                Level::Unclear => (c.ink2, "lvl_unclear"),
+                            };
+                            egui::Frame::none().fill(col.gamma_multiply(0.10)).rounding(Rounding::same(8.0)).inner_margin(egui::Margin::symmetric(10.0, 6.0)).show(ui, |ui| {
+                                ui.set_width(w - 70.0);
+                                ui.horizontal(|ui| {
+                                    egui::Frame::none().fill(col).rounding(Rounding::same(5.0)).inner_margin(egui::Margin::symmetric(6.0, 1.0)).show(ui, |ui| {
+                                        ui.label(RichText::new(self.t(key)).color(Color32::WHITE).small().b());
+                                    });
+                                });
+                                ui.add(egui::Label::new(RichText::new(&line.text).color(c.ink)).wrap());
+                                for f in &line.findings {
+                                    let word = if f.text.is_empty() { String::new() } else { format!("«{}» — ", f.text) };
+                                    ui.add(egui::Label::new(RichText::new(format!("{}{}: {}", word, self.td(&format!("sem_{}_t", f.kind.key())), self.td(&format!("sem_{}_h", f.kind.key())))).color(c.ink2).small()).wrap());
+                                }
+                            });
+                            ui.add_space(6.0);
+                        }
+                        ui.add_space(8.0);
+                        ui.add(egui::Label::new(RichText::new(self.t("sem_disclaimer")).color(c.ink2).small().italics()).wrap());
+                    });
+                });
+            });
+        });
+        if close {
+            self.analyze = None;
+        }
     }
 
     // ------------------------------------------------------------- media in chat
@@ -1916,6 +2286,7 @@ impl CyberApp {
                 let tex = self.emoji.tex(&ctx, emoji::cat_icon(cat));
                 let sel = ti == self.emoji_tab && self.emoji_query.is_empty();
                 let key: &'static str = match *cat {
+                    "sce" => "cat_sce",
                     "smileys" => "cat_smileys",
                     "people" => "cat_people",
                     "hearts" => "cat_hearts",
@@ -1939,7 +2310,10 @@ impl CyberApp {
             egui::Grid::new("emoji_grid").spacing(egui::vec2(4.0, 4.0)).show(ui, |ui| {
                 for (n, i) in items.iter().enumerate() {
                     let tex = self.emoji.tex(&ctx, *i);
-                    let b = ui.add(egui::ImageButton::new(SizedTexture::new(tex, egui::vec2(28.0, 28.0))).frame(false)).on_hover_text(format!(":{}:", emoji::code(*i)));
+                    let b = ui.add(egui::ImageButton::new(SizedTexture::new(tex, egui::vec2(28.0, 28.0))).frame(false)).on_hover_text(match emoji::about(*i) {
+                        Some(d) => format!(":{}: — {d}", emoji::code(*i)),
+                        None => format!(":{}:", emoji::code(*i)),
+                    });
                     if b.clicked() {
                         if !self.input.is_empty() && !self.input.ends_with(' ') {
                             self.input.push(' ');
@@ -1955,9 +2329,37 @@ impl CyberApp {
     }
 
     fn gif_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new(self.t("my_gifs")).color(th().ink).b());
+        // built-in stickers on general-semantics themes (stored like any received GIF)
+        if self.builtin_gifs.is_empty() {
+            self.builtin_gifs = BUILTIN_GIFS.iter().map(|b| store::save_blob(b)).collect();
+        }
+        ui.label(RichText::new(self.t("sce_gifs")).color(th().ink).b());
         ui.add_space(4.0);
         let time = ui.input(|i| i.time);
+        let builtin = self.builtin_gifs.clone();
+        ui.horizontal_wrapped(|ui| {
+            for h in builtin {
+                if let Ok(Some(Shown::Anim { frames, total_ms, .. })) = self.media.get(&h, MediaKind::Gif) {
+                    let mut t = ((time * 1000.0) as u64 % *total_ms as u64) as u32;
+                    let mut id = frames[0].0.id();
+                    for (tex, ms) in frames.iter() {
+                        if t < *ms {
+                            id = tex.id();
+                            break;
+                        }
+                        t -= ms;
+                    }
+                    if ui.add(egui::ImageButton::new(SizedTexture::new(id, egui::vec2(54.0, 54.0))).frame(false).rounding(Rounding::same(8.0))).clicked() {
+                        if let Some(bytes) = store::load_blob(&h) {
+                            self.send_file("sce.gif".into(), bytes);
+                        }
+                    }
+                }
+            }
+        });
+        ui.add_space(6.0);
+        ui.label(RichText::new(self.t("my_gifs")).color(th().ink).b());
+        ui.add_space(4.0);
         egui::ScrollArea::vertical().max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
             if self.settings.gifs.is_empty() {
                 ui.colored_label(th().ink2, self.t("no_gifs"));
@@ -2229,6 +2631,48 @@ const SYM_MIC_OFF: &[u8] = include_bytes!("../assets/symbolic/mic-off.png");
 const SYM_HANGUP: &[u8] = include_bytes!("../assets/symbolic/hangup.png");
 const SYM_PENCIL: &[u8] = include_bytes!("../assets/symbolic/pencil.png");
 const SYM_TRASH: &[u8] = include_bytes!("../assets/symbolic/trash.png");
+const BUILTIN_GIFS: [&[u8]; 5] = [
+    include_bytes!("../assets/gifs/map-territory.gif"),
+    include_bytes!("../assets/gifs/index.gif"),
+    include_bytes!("../assets/gifs/pause.gif"),
+    include_bytes!("../assets/gifs/check-facts.gif"),
+    include_bytes!("../assets/gifs/bridge.gif"),
+];
+const SYM_LEVELS: &[u8] = include_bytes!("../assets/symbolic/levels.png");
+const DOC_SD: &[u8] = include_bytes!("../assets/docs/structural-differential.png");
+
+/// Today's local date (day, month, year).
+fn chrono_today() -> (u32, u32, i32) {
+    use chrono::Datelike;
+    let t = chrono::Local::now();
+    (t.day(), t.month(), t.year())
+}
+
+/// Ready-made blocks for the composer (problem solving, facts check …).
+fn templates(lang: Lang) -> Vec<(&'static str, String)> {
+    let ru = matches!(lang, Lang::Ru | Lang::Uk);
+    let (d, m, y) = chrono_today();
+    let today = format!("{d:02}.{m:02}.{y}");
+    if ru {
+        vec![
+            ("tpl_check", "- [ ] \n- [ ] \n- [ ] ".to_string()),
+            ("tpl_table", "| Что | Кто | Когда |\n|---|---|---|\n|  |  |  |".to_string()),
+            ("tpl_proscons", "| Решение | Плюсы | Минусы |\n|---|---|---|\n| 1. |  |  |\n| 2. |  |  |".to_string()),
+            ("tpl_six", format!("**Решение проблем — шесть шагов ({today})**\n1. Одна проблема — что именно, где, когда, с кем:\n2. Все возможные решения (хотя бы 5):\n- \n- \n3. Плюсы и минусы:\n| Решение | Плюсы | Минусы |\n|---|---|---|\n|  |  |  |\n4. Выбранное решение:\n5. План действий:\n- [ ] Шаг 1 — когда:\n- [ ] Шаг 2 — когда:\n6. Итоги: что получилось, что нет, что дальше:")),
+            ("tpl_smart", "**Цель (SMART)**\n- Конкретная: \n- Измеримая: \n- Достижимая: \n- Значимая: \n- Срок: ".to_string()),
+            ("tpl_facts", format!("**Сверка фактов ({today})**\n- Что я наблюдал (где, когда): \n- Что я предположил: \n- Как это проверить: \n- Что подтвердилось: ")),
+        ]
+    } else {
+        vec![
+            ("tpl_check", "- [ ] \n- [ ] \n- [ ] ".to_string()),
+            ("tpl_table", "| What | Who | When |\n|---|---|---|\n|  |  |  |".to_string()),
+            ("tpl_proscons", "| Option | Pros | Cons |\n|---|---|---|\n| 1. |  |  |\n| 2. |  |  |".to_string()),
+            ("tpl_six", format!("**Problem solving — six steps ({today})**\n1. One problem — what exactly, where, when, with whom:\n2. All possible solutions (at least 5):\n- \n- \n3. Pros and cons:\n| Option | Pros | Cons |\n|---|---|---|\n|  |  |  |\n4. Chosen solution:\n5. Action plan:\n- [ ] Step 1 — when:\n- [ ] Step 2 — when:\n6. Review: what worked, what didn't, what next:")),
+            ("tpl_smart", "**Goal (SMART)**\n- Specific: \n- Measurable: \n- Achievable: \n- Relevant: \n- Time-bound: ".to_string()),
+            ("tpl_facts", format!("**Fact check ({today})**\n- What I observed (where, when): \n- What I assumed: \n- How to check it: \n- What was confirmed: ")),
+        ]
+    }
+}
 const SYM_GEAR: &[u8] = include_bytes!("../assets/symbolic/gear.png");
 const SYM_HEADPHONES: &[u8] = include_bytes!("../assets/symbolic/headphones.png");
 /// Wordless step-by-step pictures (docs/img/*.svg); captions come from i18n.

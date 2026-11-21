@@ -333,3 +333,52 @@ delete_confirm	Delete?	Удалить?	Видалити?	Löschen?	¿Eliminar?	S
 editing_bar	Editing · version	Редактирование · версия	Редагування · версія	Bearbeiten · Version	Editando · versión	Modification · version	正在编辑 · 版本	編集中 · バージョン
 editing_keys	Enter — save · Esc — cancel	Enter — сохранить · Esc — отмена	Enter — зберегти · Esc — скасувати	Enter — speichern · Esc — abbrechen	Enter — guardar · Esc — cancelar	Entrée — enregistrer · Échap — annuler	Enter 保存 · Esc 取消	Enter 保存 · Esc キャンセル
 edit_cancel	Cancel	Отмена	Скасувати	Abbrechen	Cancelar	Annuler	取消	キャンセル
+sem_levels	Levels of abstraction	Уровни абстракции	Рівні абстракції					
+sem_intro	Korzybski's structural differential: the event is more than the object we notice, the object more than our description, and inferences and evaluations are further still from the facts. Green — description, orange — inference, red — evaluation.	Структурный дифференциал Коржибски: событие больше, чем замеченный нами объект, объект больше описания, а выводы и оценки ещё дальше от фактов. Зелёный — описание, оранжевый — вывод, красный — оценка.	Структурний диференціал Коржибського: подія більша за помічений об'єкт, об'єкт більший за опис, а висновки й оцінки ще далі від фактів. Зелений — опис, помаранчевий — висновок, червоний — оцінка.					
+sem_disclaimer	This is a simple word-based helper, not a judge. It can be wrong — check it yourself. The map is not the territory, and this analysis is a map too.	Это простой помощник по словам, а не судья. Он может ошибаться — проверяйте сами. Карта — не территория, и этот разбор — тоже карта.	Це простий помічник за словами, а не суддя. Він може помилятися — перевіряйте самі. Карта — не територія, і цей розбір — теж карта.					
+lvl_desc	Description	Описание	Опис					
+lvl_infer	Inference	Вывод	Висновок					
+lvl_eval	Evaluation	Оценка	Оцінка					
+lvl_unclear	Unclear	Неясно	Неясно					
+sem_allness_t	Generalisation	Обобщение	Узагальнення					
+sem_allness_h	when exactly? Add a date or index.	когда именно? Добавьте дату или индекс.	коли саме? Додайте дату чи індекс.					
+sem_identity_t	Label on a person	Ярлык на человека	Ярлик на людину					
+sem_identity_h	a person is not a label: describe the action.	человек ≠ ярлык: опишите поступок.	людина ≠ ярлик: опишіть вчинок.					
+sem_mind_t	Mind reading	Чтение мыслей	Читання думок					
+sem_mind_h	a guess about someone's intent: ask instead.	это догадка о намерениях: лучше спросите.	це здогадка про наміри: краще спитайте.					
+sem_eitheror_t	Either-or	Или-или	Або-або					
+sem_eitheror_h	is there a third option, or a degree?	есть ли третий вариант или степени?	чи є третій варіант або ступені?					
+sem_jump_t	Jumping to conclusions	Прыжок к выводу	Стрибок до висновку					
+sem_jump_h	what facts support it? Check the hypothesis.	на каких фактах? Проверьте гипотезу.	на яких фактах? Перевірте гіпотезу.					
+sem_eval_t	Loaded evaluation	Оценка	Оцінка					
+sem_eval_h	say what happened, not how bad it is.	скажите, что произошло, а не насколько это плохо.	скажіть, що сталося, а не наскільки це погано.					
+sem_demand_t	Demand	Требование	Вимога					
+sem_demand_h	a request works better than a must.	просьба работает лучше, чем «должен».	прохання працює краще, ніж «мусиш».					
+sem_insult_t	Insult	Оскорбление	Образа					
+sem_insult_h	words are maps, not people.	слово — карта, а не человек.	слово — карта, а не людина.					
+sem_dogma_t	Dogmatic wording	Догматичная формулировка	Догматичне формулювання					
+sem_dogma_h	what is it based on? How could it be tested or refuted?	на чём основано? Как это проверить или опровергнуть?	на чому ґрунтується? Як це перевірити чи спростувати?					
+banner_heat	The conversation seems to be heating up. Check the facts, test hypotheses, take a pause.	Похоже, разговор накаляется. Сверьте факты, проверьте гипотезы, сделайте паузу.	Схоже, розмова розпалюється. Звірте факти, перевірте гіпотези, зробіть паузу.					
+banner_dogma	Dogmatic wordings here. We go by science: ask for testable facts, any claim may be checked.	Здесь встречаются догматичные формулировки. У нас всё по науке: просите проверяемых фактов, любое утверждение можно проверить.	Тут трапляються догматичні формулювання. У нас усе за наукою: просіть перевірюваних фактів, будь-яке твердження можна перевірити.					
+banner_hide	Hide	Скрыть	Сховати					
+tpl_tip	Insert a block: check list, table, problem solving…	Вставить блок: чек-лист, таблица, решение проблем…	Вставити блок: чек-лист, таблиця, розв'язання проблем…					
+tpl_check	Check list	Чек-лист	Чек-лист					
+tpl_table	Table	Таблица	Таблиця					
+tpl_proscons	Pros and cons	Плюсы и минусы	Плюси й мінуси					
+tpl_six	Problem solving: six steps	Решение проблем: шесть шагов	Розв'язання проблем: шість кроків					
+tpl_smart	SMART goal	Цель SMART	Ціль SMART					
+tpl_facts	Fact check	Сверка фактов	Звірка фактів					
+ext_index	Index	Индекс	Індекс					
+ext_index_tip	Indexing: Ivan₁ ≠ Ivan₂ — no two things are identical.	Индексирование: Иван₁ ≠ Иван₂ — нет двух одинаковых.	Індексування: Іван₁ ≠ Іван₂ — немає двох однакових.					
+ext_date	Date	Дата	Дата					
+ext_date_tip	Dating: today's date — Ivan²⁰²⁶ ≠ Ivan²⁰¹⁶, things change.	Датирование: сегодняшняя дата — Иван²⁰²⁶ ≠ Иван²⁰¹⁶, всё меняется.	Датування: сьогоднішня дата — Іван²⁰²⁶ ≠ Іван²⁰¹⁶, усе змінюється.					
+ext_quote_tip	Safety quotes: the word is used with care, its meaning is not settled.	Кавычки: слово употреблено осторожно, его значение не бесспорно.	Лапки: слово вжито обережно, його значення не безперечне.					
+ext_etc	etc.	и т.д.	тощо					
+ext_etc_tip	Etc.: you never say everything about anything.	И т.д.: обо всём нельзя сказать всего.	Тощо: про щось неможливо сказати все.					
+ext_hyphen	hyphen-join	через-дефис	через-дефіс					
+ext_hyphen_tip	Hyphen: what is joined in nature should not be split in words (space-time).	Дефис: что связано в природе, не разрывать словами (пространство-время).	Дефіс: що пов'язане в природі, не розривати словами (простір-час).					
+ext_tome	to me	для меня	для мене					
+ext_tome_tip	To-me: an evaluation belongs to the one who makes it.	«Для меня»: оценка принадлежит тому, кто её даёт.	«Для мене»: оцінка належить тому, хто її дає.					
+ext_tome_text	(to me)	(для меня)	(для мене)					
+cat_sce	SocioCyberneering & general semantics	SocioCyberneering и общая семантика	SocioCyberneering і загальна семантика	SocioCyberneering & Allgemeine Semantik	SocioCyberneering y semántica general	SocioCyberneering et sémantique générale	SocioCyberneering 与普通语义学	SocioCyberneering と一般意味論
+sce_gifs	SocioCyberneering stickers	Стикеры SocioCyberneering	Стікери SocioCyberneering	SocioCyberneering-Sticker	Stickers de SocioCyberneering	Autocollants SocioCyberneering	SocioCyberneering 贴纸	SocioCyberneering ステッカー

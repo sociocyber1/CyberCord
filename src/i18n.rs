@@ -73,6 +73,15 @@ fn table() -> &'static HashMap<&'static str, [&'static str; 8]> {
 }
 
 /// Translate a key. Missing translation → English → the key itself.
+/// Like [`tr`] for keys built at run time; unknown keys give "".
+pub fn tr_dyn(lang: Lang, key: &str) -> &'static str {
+    match table().get(key) {
+        Some(row) if !row[lang as usize].is_empty() => row[lang as usize],
+        Some(row) => row[0],
+        None => "",
+    }
+}
+
 pub fn tr(lang: Lang, key: &'static str) -> &'static str {
     match table().get(key) {
         Some(row) if !row[lang as usize].is_empty() => row[lang as usize],

@@ -8,21 +8,49 @@ use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 
 #[path = "emoji_data.rs"]
 mod data;
+#[path = "emoji_sce.rs"]
+mod sce;
 
 /// Categories in picker order: (category id, icon emoji index found at runtime).
-pub const CATEGORIES: &[&str] = &["smileys", "people", "hearts", "nature", "food", "activity", "symbols"];
+/// "sce" comes first: our own general-semantics / SocioCyberneering set.
+/// Those have no Unicode code point, so messages carry their `:shortcode:`.
+pub const CATEGORIES: &[&str] = &["sce", "smileys", "people", "hearts", "nature", "food", "activity", "symbols"];
 
 pub fn count() -> usize {
-    data::EMOJI.len()
+    data::EMOJI.len() + sce::SCE.len()
 }
+/// What goes into the message: the Unicode emoji, or `:code:` for our own set.
 pub fn ch(i: usize) -> &'static str {
-    data::EMOJI[i].0
+    if i < data::EMOJI.len() {
+        data::EMOJI[i].0
+    } else {
+        sce::SCE[i - data::EMOJI.len()].0
+    }
 }
 pub fn code(i: usize) -> &'static str {
-    data::EMOJI[i].1
+    if i < data::EMOJI.len() {
+        data::EMOJI[i].1
+    } else {
+        sce::SCE[i - data::EMOJI.len()].0.trim_matches(':')
+    }
 }
 pub fn cat(i: usize) -> &'static str {
-    data::EMOJI[i].2
+    if i < data::EMOJI.len() {
+        data::EMOJI[i].2
+    } else {
+        "sce"
+    }
+}
+/// Short English description (our own set only).
+pub fn about(i: usize) -> Option<&'static str> {
+    i.checked_sub(data::EMOJI.len()).and_then(|k| sce::SCE.get(k)).map(|e| e.1)
+}
+fn png(i: usize) -> &'static [u8] {
+    if i < data::EMOJI.len() {
+        data::EMOJI[i].3
+    } else {
+        sce::SCE[i - data::EMOJI.len()].2
+    }
 }
 
 fn key(s: &str) -> String {
@@ -31,7 +59,7 @@ fn key(s: &str) -> String {
 
 fn by_char() -> &'static HashMap<String, usize> {
     static M: OnceLock<HashMap<String, usize>> = OnceLock::new();
-    M.get_or_init(|| (0..count()).map(|i| (key(ch(i)), i)).collect())
+    M.get_or_init(|| (0..data::EMOJI.len()).map(|i| (key(ch(i)), i)).collect())
 }
 
 fn by_code() -> &'static HashMap<&'static str, usize> {
@@ -126,7 +154,7 @@ impl EmojiCache {
         self.tex
             .entry(idx)
             .or_insert_with(|| {
-                let img = image::load_from_memory(data::EMOJI[idx].3)
+                let img = image::load_from_memory(png(idx))
                     .map(|i| i.to_rgba8())
                     .unwrap_or_else(|_| image::RgbaImage::new(1, 1));
                 let ci = ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());

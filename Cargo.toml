@@ -1,6 +1,6 @@
 [package]
 name = "cybercord-node"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 description = "CyberCord — serverless peer-to-peer chat (SocioCyberneering Inc.)"
 license = "MIT OR Apache-2.0"

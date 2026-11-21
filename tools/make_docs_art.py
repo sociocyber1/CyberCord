@@ -105,8 +105,38 @@ for (x, y), c in zip(pts, [GREEN5, PURP, BLUE5, ORANGE, BROWN]):
     b += f'<circle cx="{x}" cy="{y}" r="15" fill="{c}"/><circle cx="{x}" cy="{y-4}" r="5" fill="#fff"/><path d="M{x-9} {y+9} a9 7 0 0 1 18 0" fill="#fff"/>'
 imgs["sce-city"] = b
 
+# 6. Structural differential: event (parabola) → object (disk) → labels
+b = ''
+cx = 170
+holes = [(cx + dx, 58 + dy) for dx, dy in [(-60, 6), (-38, 14), (-15, 4), (8, 12), (30, 5), (52, 13), (-48, 30), (-22, 26), (2, 32), (26, 28), (46, 34), (-30, 48), (-6, 52), (18, 50), (38, 56), (-12, 72), (12, 74)]]
+b += f'<path d="M{cx-92} 40 Q{cx} 190 {cx+92} 40" fill="#dcebfb" stroke="{BLUE}" stroke-width="3"/>'
+b += f'<path d="M{cx-92} 40 h184" stroke="{BLUE}" stroke-width="3" stroke-dasharray="4 7" opacity=".7"/>'
+for (x, y) in holes:
+    b += f'<circle cx="{x}" cy="{y}" r="3.2" fill="#fff" stroke="{BLUE1}"/>'
+disk = (cx, 152)
+b += f'<ellipse cx="{disk[0]}" cy="{disk[1]}" rx="46" ry="14" fill="{L3}" stroke="{INK2}" stroke-width="2.5"/>'
+for (x, y) in [holes[1], holes[8], holes[11], holes[15]]:
+    b += f'<line x1="{x}" y1="{y}" x2="{x*0.4+disk[0]*0.6:.1f}" y2="{disk[1]-6}" stroke="{INK2}" stroke-width="1.4"/>'
+tags = [(GREEN5, 192), (ORANGE, 216), (RED, 240)]
+prev = (disk[0], disk[1] + 12)
+for i, (col, y) in enumerate(tags):
+    x = cx - 34 + i * 10
+    b += f'<line x1="{prev[0]}" y1="{prev[1]}" x2="{x+34}" y2="{y-6}" stroke="{INK2}" stroke-width="1.4"/>'
+    b += f'<rect x="{x}" y="{y-6}" width="68" height="14" rx="4" fill="{col}"/><circle cx="{x+60}" cy="{y+1}" r="2.5" fill="#fff"/>'
+    prev = (x + 34, y + 8)
+b += f'<path d="M{cx+48} 246 C{cx+150} 240 {cx+150} 80 {cx+80} 70" fill="none" stroke="{INK2}" stroke-width="1.6" stroke-dasharray="5 6"/>'
+# right: three chat bubbles mapped to the three levels
+for i, (col, w) in enumerate([(GREEN5, 170), (ORANGE, 140), (RED, 110)]):
+    y = 70 + i * 62
+    b += f'<g filter="url(#sh)"><rect x="350" y="{y}" width="{w+40}" height="44" rx="14" fill="{L1}"/></g><rect x="362" y="{y+10}" width="14" height="24" rx="4" fill="{col}"/>'
+    b += f'<rect x="386" y="{y+12}" width="{w}" height="7" rx="3.5" fill="{L4}"/><rect x="386" y="{y+25}" width="{w-40}" height="7" rx="3.5" fill="{L3}"/>'
+imgs["structural-differential"] = b
+
 for name, body in imgs.items():
     p = os.path.join(OUT, name + ".svg")
     open(p, "w").write(svg(body))
-    subprocess.run(["rsvg-convert", "-w", "560", "-h", "300", "-o", os.path.join(AS, name + ".png"), p], check=True)
+    hgt = 260 if name == "structural-differential" else 300
+    if hgt != 300:
+        open(p, "w").write(svg(body, h=hgt))
+    subprocess.run(["rsvg-convert", "-w", "560", "-h", str(hgt), "-o", os.path.join(AS, name + ".png"), p], check=True)
 print("ok", len(imgs))
