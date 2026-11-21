@@ -4,6 +4,7 @@
 
 mod app;
 mod camera;
+mod docs;
 mod emoji;
 mod i18n;
 mod media;

@@ -1,9 +1,56 @@
 <p align="center">
-  <img src="assets/icon.svg" width="96" alt="CyberCord">
+  <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.10</h1>
+<h1 align="center">CyberCord 0.11</h1>
 <p align="center"><b>Чат, голос, музыка и видео-кружки без серверов</b> — SocioCyberneering Inc. Communication Cooperations</p>
+
+## Суть проекта
+
+> **Тут нет лимитов, тут нет банов. Вы отвечаете за будущее.**
+>
+> Войны надо прекращать. Шаг первый — начать с себя в своих отношениях с людьми.
+>
+> Построим мосты — построим и сам проект. Будем ломать — ничего не получится,
+> затянем по времени.
+
+У CyberCord нет владельца и нет центра: сеть держат сами участники. Поэтому
+здесь нет модераторов с кнопкой «бан». Вместо этого — честная подсказка самому
+себе: если в вашем сообщении есть оскорбление, оно всё равно уйдёт, а
+CyberCord покажет только вам короткий текст о том, почему слова имеют значение.
+
+<table>
+<tr>
+<td width="33%" align="center"><a href="docs/words-matter.ru.md"><img src="docs/img/words-map.svg" alt=""></a><br><b><a href="docs/words-matter.ru.md">Слова — это не люди</a></b><br>Карта — не территория: общая семантика Коржибски за одну минуту. Открывается после первого оскорбления.</td>
+<td width="33%" align="center"><a href="docs/consequences.ru.md"><img src="docs/img/consequences-chain.svg" alt=""></a><br><b><a href="docs/consequences.ru.md">Цена слов</a></b><br>Эскалация как положительная обратная связь — и чем за неё платят люди и планета. После десятого.</td>
+<td width="33%" align="center"><a href="docs/sociocyberneering.ru.md"><img src="docs/img/sce-city.svg" alt=""></a><br><b><a href="docs/sociocyberneering.ru.md">SocioCyberneering Inc.</a></b><br>Социокибернетика, идеи Проекта Венера Жака Фреско (до 2017 года) и при чём тут CyberCord.</td>
+</tr>
+</table>
+
+English: [Words are not people](docs/words-matter.en.md) ·
+[The price of words](docs/consequences.en.md) ·
+[About SocioCyberneering Inc.](docs/sociocyberneering.en.md)
+
+Материалы по общей семантике:
+[archive.org/details/general-semantic-2024](https://archive.org/details/general-semantic-2024).
+Михаилу Короткову — отдельная благодарность за переводы.
+
+**Коммуникация с помощью Claude — делайте 3D-визуализации в Claude:**
+[видео, с 29:13](https://youtu.be/258cx_PsrRA?t=1753) ·
+[SocioCyberneering на YouTube](https://www.youtube.com/watch?v=258cx_PsrRA)
+
+### Как это должно работать: 100 человек в одном голосовом канале
+
+![100 человек в одном голосовом канале: 8 relay из самих участников, 92 слушателя, сервера нет](docs/img/voice-100.svg)
+
+Сервера нет и здесь: роль relay берут на себя участники с хорошим каналом,
+которые держат CyberCord в фоне. Каждый слушатель подключён к ближайшему relay,
+relay связаны между собой, а пересылаются только три самых громких голоса в
+Opus. Слушателю нужно около 96 кбит/с, relay на 12 человек — около 1,2 Мбит/с.
+Это план следующих версий; как голос устроен сейчас и что нужно поменять —
+в [docs/VOICE-100.md](docs/VOICE-100.md).
+
+---
 
 <p align="center">
   <img src="docs/img/server-sce.svg" width="44">
@@ -28,6 +75,7 @@ CyberCord похож на Discord, но у него нет центрально�
 
 **Документация:**
 
+- [Голосовой канал на 100 человек](docs/VOICE-100.md) — как это должно работать;
 - [Как устроен протокол](docs/PROTOCOL.md) — транспорт, поиск нод без серверов,
   темы, сообщения, история, файлы как в торренте, голос, хаб, поиск людей,
   статусы, безопасность;
@@ -38,7 +86,29 @@ CyberCord похож на Discord, но у него нет центрально�
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
 
-## Что нового в 0.10
+## Что нового в 0.11
+
+- **«Слова имеют значение».** Если в вашем сообщении есть оскорбление или мат,
+  сообщение всё равно отправляется как есть — без цензуры, лимитов и банов.
+  - В первый раз CyberCord откроет только вам текст
+    [«Слова — это не люди»](docs/words-matter.ru.md), на десятый —
+    [«Цена слов»](docs/consequences.ru.md). В остальные разы — одна строка
+    внизу, не чаще раза в 10 минут.
+  - Проверка идёт только на вашем компьютере и только для того, что пишете вы;
+    счётчик хранится в ваших настройках и никуда не передаётся.
+  - Распознаются русский, украинский, английский, немецкий, испанский,
+    французский, китайский и японский (простые списки слов, без попыток
+    «поймать» обходы).
+  - Отключить, перечитать тексты и сбросить счётчик: Настройки → Помощь.
+- **Документ о SocioCyberneering Inc.** — Настройки → О программе.
+- Иллюстрации в стиле GNOME к документам и схема
+  [голосового канала на 100 человек](docs/VOICE-100.md).
+
+![«Слова — это не люди» в CyberCord](docs/img/screen-words.png)
+
+![Настройки → Помощь → «Слова имеют значение»](docs/img/screen-words-settings.png)
+
+## Что было в 0.10
 
 - **Работа в фоне и трей.** Крестик не закрывает CyberCord, а прячет в трей:
   нода продолжает передавать сообщения, служить relay и раздавать файлы.
@@ -234,12 +304,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.10.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.11.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.10.0-linux-x86_64.tar.gz
-cd cybercord-0.10.0-linux-x86_64
+tar xf cybercord-0.11.0-linux-x86_64.tar.gz
+cd cybercord-0.11.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -420,7 +490,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
     использует nokhwa/V4L2);
   - работа через реальный интернет. Проверено на одной машине, включая relay
     между двумя «NAT»-узлами.
-- Голос пока без шумоподавления и без Opus (несжатый PCM): это следующий шаг.
+- Голос пока без шумоподавления и без Opus (несжатый PCM) и рассчитан на
+  небольшие комнаты; план на 100 человек — в [docs/VOICE-100.md](docs/VOICE-100.md).
 - Личные сообщения шифруются на уровне соединения (Noise), но не сквозным
   шифрованием ключами друзей. Узел, который знает ID обоих, может подписаться на
   их канал. MLS запланирован.
@@ -432,11 +503,14 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 - Шрифт: [Inter](https://rsms.me/inter/), © The Inter Project Authors, SIL OFL 1.1
   (`assets/fonts/LICENSE-Inter.txt`).
 - Иконки серверов и иллюстрации: SocioCyberneering Inc., нарисованы для
-  CyberCord (`tools/make_icons.py`, `tools/make_guide.py`).
+  CyberCord (`tools/make_icons.py`, `tools/make_guide.py`,
+  `tools/make_docs_art.py`, `tools/make_readme_art.py`).
 
 ---
 
 ### English (short)
+
+**The idea:** no owner, no centre, no bans, no limits: the network is held by its people, and you are responsible for the future. **0.11** adds "Words matter": if your own message contains an insult it is still sent as written, and only you are shown a short read on general semantics ([Words are not people](docs/words-matter.en.md)), then [The price of words](docs/consequences.en.md) at the tenth time. Local only, can be turned off. Plus [About SocioCyberneering Inc.](docs/sociocyberneering.en.md) and a design for [100 people in one voice channel](docs/VOICE-100.md) ([picture](docs/img/voice-100.en.svg)).
 
 **0.10:** runs in the background with a tray icon (Xfce/KDE/GNOME+AppIndicator via StatusNotifierItem over D-Bus, Windows notification area): Open · Look for new users · Status · Notifications · Quit; autostart; user statuses; desktop notifications for DMs and mentions; torrent-like file sharing up to 8 GB (256 KB verified pieces from several nodes, queue while nobody has it, resume after restart, every downloader seeds).
 

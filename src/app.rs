@@ -17,6 +17,7 @@ use cybercord_node::types::{clock, now_ms, parse_connect_code, Attachment, Chann
 use cybercord_node::voice;
 
 use crate::camera;
+use crate::docs::{self, Doc};
 use crate::emoji::{self, EmojiCache, Seg};
 use crate::i18n::{self, Lang};
 use crate::media::{self, MediaCache, Shown};
@@ -175,6 +176,9 @@ pub struct CyberApp {
     map: MapState,
     transfers: Vec<cybercord_node::transfer::TransferInfo>,
     show_downloads: bool,
+    /// open in-app document ("Words matter" etc.) and when the last hint toast was shown
+    doc_open: Option<Doc>,
+    words_toast_at: Option<Instant>,
 }
 
 impl CyberApp {
@@ -277,6 +281,8 @@ impl CyberApp {
             map: MapState::default(),
             transfers: Vec::new(),
             show_downloads: false,
+            doc_open: None,
+            words_toast_at: None,
             mic_test_msg: None,
             test_player: None,
         }
@@ -308,6 +314,11 @@ impl CyberApp {
                     "downloads" => {
                         self.show_downloads = true;
                         self.show_home = false;
+                    }
+                    p if p.starts_with("doc:") => self.doc_open = Doc::from_id(&p[4..]),
+                    "wordstab" => {
+                        self.show_settings = true;
+                        self.set_tab = SetTab::Help;
                     }
                     "bgtab" => {
                         self.show_settings = true;
@@ -498,11 +509,116 @@ impl CyberApp {
             return;
         }
         self.input.clear();
+        self.words_check(&body);
         let ch = self.active_channel();
         if ch.is_dm() {
             let _ = self.handle.cmd_tx.send(Cmd::SendDm { peer_id: ch.channel, body });
         } else {
             let _ = self.handle.cmd_tx.send(Cmd::SendChat { channel: ch, body });
+        }
+    }
+
+    /// "Words matter": the message is always sent as written. If it contains
+    /// an insult, the sender (only) gets a document the 1st and 10th time and
+    /// a quiet one-line hint otherwise (at most every 10 minutes).
+    fn words_check(&mut self, body: &str) {
+        if !self.settings.words_hints || !cybercord_node::words::is_insult(body) {
+            return;
+        }
+        self.settings.words_count = self.settings.words_count.saturating_add(1);
+        store::save_settings(&self.settings);
+        match self.settings.words_count {
+            1 => self.doc_open = Some(Doc::WordsMatter),
+            10 => self.doc_open = Some(Doc::Consequences),
+            _ => {
+                if self.words_toast_at.map_or(true, |t| t.elapsed() > Duration::from_secs(600)) {
+                    self.words_toast_at = Some(Instant::now());
+                    let m = self.t("words_toast").to_string();
+                    self.toast(m);
+                }
+            }
+        }
+    }
+
+    /// The document reader, drawn over everything (also over settings).
+    fn doc_overlay(&mut self, ctx: &egui::Context) {
+        let Some(doc) = self.doc_open else { return };
+        let c = th();
+        let screen = ctx.screen_rect();
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        egui::Area::new(Id::new("doc_dim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            let r = ui.allocate_rect(screen, egui::Sense::click());
+            ui.painter().rect_filled(screen, Rounding::ZERO, Color32::from_black_alpha(150));
+            if r.clicked() {
+                close = true;
+            }
+        });
+        let w = (screen.width() - 48.0).clamp(320.0, 720.0);
+        let h = screen.height() - 56.0;
+        let md = doc.text(self.lang);
+        egui::Area::new(Id::new("doc_win")).order(Order::Tooltip).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+            egui::Frame::none().fill(c.window).rounding(Rounding::same(14.0)).stroke(Stroke::new(1.0, c.line)).inner_margin(egui::Margin::same(0.0)).shadow(egui::epaint::Shadow { offset: egui::vec2(0.0, 8.0), blur: 28.0, spread: 0.0, color: Color32::from_black_alpha(90) }).show(ui, |ui| {
+                ui.set_width(w);
+                ui.set_height(h);
+                // header
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.set_height(48.0);
+                    let head = if doc == Doc::Sce { "SocioCyberneering Inc." } else { self.t("words_h") };
+                    ui.label(RichText::new(head).color(c.ink2).size(13.0).b());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(12.0);
+                        if ui.add(egui::Button::new(RichText::new(self.t("close")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(96.0, 30.0))).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add(egui::Separator::default().spacing(0.0));
+                egui::ScrollArea::vertical().id_salt(("doc", doc as u8)).auto_shrink([false, false]).show(ui, |ui| {
+                    egui::Frame::none().inner_margin(egui::Margin { left: 32.0, right: 32.0, top: 22.0, bottom: 28.0 }).show(ui, |ui| {
+                        let icons = &mut self.icons;
+                        docs::show(ui, md, &mut |ctx, key, png| icons.get(ctx, key, png));
+                        ui.add_space(14.0);
+                        if matches!(doc, Doc::WordsMatter | Doc::Consequences) {
+                            ui.colored_label(c.ink2, RichText::new(self.t("words_private")).small());
+                        }
+                    });
+                });
+            });
+        });
+        if close {
+            self.doc_open = None;
+        }
+    }
+
+    /// Settings → Help: the "Words matter" block.
+    fn words_section(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        ui.label(RichText::new(self.t("words_h").to_uppercase()).color(c.ink2).size(12.0).b());
+        ui.add_space(6.0);
+        let label = self.t("words_opt");
+        if ui.checkbox(&mut self.settings.words_hints, label).changed() {
+            store::save_settings(&self.settings);
+        }
+        ui.add_space(4.0);
+        ui.colored_label(c.ink2, self.t("words_note"));
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            for (doc, key) in [(Doc::WordsMatter, "words_doc1"), (Doc::Consequences, "words_doc2"), (Doc::Sce, "sce_doc")] {
+                if ui.add(egui::Button::new(RichText::new(self.t(key)).color(c.ink)).fill(c.card).rounding(Rounding::same(8.0)).min_size(egui::vec2(0.0, 32.0))).clicked() {
+                    self.doc_open = Some(doc);
+                }
+            }
+        });
+        if self.settings.words_count > 0 {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.colored_label(c.ink2, RichText::new(self.t("words_count").replace("{n}", &self.settings.words_count.to_string())).small());
+                if ui.small_button(self.t("words_reset")).clicked() {
+                    self.settings.words_count = 0;
+                    store::save_settings(&self.settings);
+                }
+            });
         }
     }
 
@@ -743,6 +859,7 @@ impl eframe::App for CyberApp {
         }
         if self.show_settings {
             self.settings_screen(ctx);
+            self.doc_overlay(ctx);
             self.draw_toast(ctx);
             ctx.request_repaint_after(Duration::from_millis(100));
             return;
@@ -812,6 +929,7 @@ impl eframe::App for CyberApp {
 
         self.popups(ctx);
         self.recorder_overlay(ctx);
+        self.doc_overlay(ctx);
         self.draw_toast(ctx);
         self.draw_tour(ctx);
 
@@ -2744,7 +2862,9 @@ impl CyberApp {
             self.go_tour(0);
             return;
         }
-        ui.add_space(16.0);
+        ui.add_space(20.0);
+        self.words_section(ui);
+        ui.add_space(22.0);
         self.guide_card(ui);
     }
 
@@ -2760,6 +2880,10 @@ impl CyberApp {
         });
         ui.add_space(12.0);
         ui.colored_label(c.ink, self.t("about_body").replace("{v}", VERSION));
+        ui.add_space(10.0);
+        if ui.add(egui::Button::new(RichText::new(self.t("sce_doc")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(220.0, 34.0))).clicked() {
+            self.doc_open = Some(Doc::Sce);
+        }
         ui.add_space(10.0);
         ui.colored_label(c.ink2, RichText::new(self.t("twemoji_credit")).small());
         ui.colored_label(c.ink2, RichText::new(self.t("fonts_credit")).small());

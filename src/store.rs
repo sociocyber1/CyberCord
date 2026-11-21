@@ -258,6 +258,12 @@ pub struct Settings {
     /// Status shown to others.
     #[serde(default)]
     pub status: String,
+    /// "Words matter": offer a short document when my own message contains an insult.
+    /// Nothing is ever blocked; the counter stays on this computer.
+    #[serde(default = "yes")]
+    pub words_hints: bool,
+    #[serde(default)]
+    pub words_count: u32,
 }
 
 fn hundred() -> f32 {
