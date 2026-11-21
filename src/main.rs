@@ -7,6 +7,7 @@ mod emoji;
 mod i18n;
 mod media;
 mod theme;
+mod tray;
 mod music;
 mod voice_rec;
 
@@ -32,6 +33,10 @@ struct Args {
     /// Run without a window (terminal front-end).
     #[arg(long)]
     headless: bool,
+
+    /// Start hidden in the system tray (used by autostart).
+    #[arg(long)]
+    minimized: bool,
 
     /// Optional: address of any known CyberCord node (e.g. a friend's) to dial at
     /// start. Not required — the app scans LAN, saved nodes, friends and the DHT.
@@ -74,6 +79,8 @@ fn main() -> anyhow::Result<()> {
         identity: args.identity.clone().unwrap_or_else(default_identity),
         listed: st.listed,
         global: st.global,
+        scan: st.scan,
+        status: st.status.clone(),
         bootstrap: args.bootstrap.clone(),
         no_mdns: args.no_mdns,
         tcp_port: args.tcp_port,
@@ -83,7 +90,7 @@ fn main() -> anyhow::Result<()> {
     if args.headless {
         run_headless(cfg, &args.channel)
     } else {
-        app::run_gui(cfg).map_err(|e| anyhow::anyhow!("gui: {e}"))
+        app::run_gui(cfg, args.minimized).map_err(|e| anyhow::anyhow!("gui: {e}"))
     }
 }
 
@@ -125,6 +132,10 @@ commands:
   /voicemsg [seconds]            record a voice message and send it
   /devices                       list microphones and speakers
   /find <name>                   search people by name (or ID start)
+  /share <path>                  share a file of any size in the open channel (torrent-like)
+  /get [name]                    download a file posted in the open channel (waits if nobody has it online)
+  /files                         downloads and shared files
+  /pause|/resume|/cancel <name>  control a download
   /nodes                         the nodes this node knows (the network map)
   /voice [guild/room]            join a voice channel (e.g. /voice sce/lounge)
   /leave                         leave voice
@@ -147,6 +158,8 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
     let stats: Arc<Mutex<String>> = Arc::new(Mutex::new("scanning…".into()));
     let nodes: Arc<Mutex<Vec<cybercord_node::types::NodeInfo>>> = Arc::new(Mutex::new(Vec::new()));
     let nodes2 = nodes.clone();
+    let xfers: Arc<Mutex<Vec<cybercord_node::transfer::TransferInfo>>> = Arc::new(Mutex::new(Vec::new()));
+    let xfers2 = xfers.clone();
 
     let ev_rx = handle.event_rx;
     let (a2, f2, id2, st2) = (addrs.clone(), friends.clone(), my_id.clone(), stats.clone());
@@ -193,6 +206,18 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
                 UiEvent::VoiceJoined { room } => println!("· voice {}", room.as_deref().unwrap_or("left")),
                 UiEvent::Talking { name } => println!("· {name} is talking"),
                 UiEvent::Nodes(list) => *nodes2.lock().unwrap() = list,
+                UiEvent::Transfers(list) => {
+                    let mut old = xfers2.lock().unwrap();
+                    for t in &list {
+                        let pct = if t.size == 0 { 100 } else { t.have_bytes * 100 / t.size };
+                        let prev = old.iter().find(|o| o.hash == t.hash);
+                        let prev_pct = prev.map(|o| if o.size == 0 { 100 } else { o.have_bytes * 100 / o.size });
+                        if prev.map(|o| o.state) != Some(t.state) || prev_pct.map(|p| p / 25 != pct / 25).unwrap_or(true) {
+                            println!("· file {} {:>3}% {:<11} {} peers  {} KB/s", t.name, pct, t.state, t.peers, t.speed_bps / 1024);
+                        }
+                    }
+                    *old = list;
+                }
                 UiEvent::Search { query, users } => {
                     println!("· search \"{query}\": {} found", users.len());
                     for u in users.iter().take(20) {
@@ -375,6 +400,39 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
                 }
                 "stop" => {
                     player = None;
+                }
+                "share" => {
+                    let _ = handle.cmd_tx.send(Cmd::ShareFile { channel: current.clone(), path: std::path::PathBuf::from(arg), body: String::new() });
+                }
+                "get" => {
+                    // download a file posted in the open channel: /get <name or hash start>
+                    let found = cybercord_node::store::load_recent(&current, 500)
+                        .into_iter()
+                        .rev()
+                        .filter_map(|e| e.attach)
+                        .find(|a| a.kind == MediaKind::File && (arg.is_empty() || a.hash.starts_with(arg) || a.name.contains(arg)));
+                    match found {
+                        Some(a) => {
+                            let _ = handle.cmd_tx.send(Cmd::Download { hash: a.hash, name: a.name, size: a.size, channel: current.clone() });
+                        }
+                        None => println!("no such file in this channel"),
+                    }
+                }
+                "files" => {
+                    for t in xfers.lock().unwrap().iter() {
+                        let pct = if t.size == 0 { 100 } else { t.have_bytes * 100 / t.size };
+                        println!("  {:<28} {:>3}%  {:<11} {} peers  {}", t.name, pct, t.state, t.peers, t.path.clone().unwrap_or_default());
+                    }
+                }
+                "pause" | "resume" | "cancel" => {
+                    if let Some(t) = xfers.lock().unwrap().iter().find(|t| t.name.contains(arg) || t.hash.starts_with(arg)) {
+                        let cmdv = match cmd {
+                            "pause" => Cmd::PauseDownload { hash: t.hash.clone(), paused: true },
+                            "resume" => Cmd::PauseDownload { hash: t.hash.clone(), paused: false },
+                            _ => Cmd::CancelDownload(t.hash.clone()),
+                        };
+                        let _ = handle.cmd_tx.send(cmdv);
+                    }
                 }
                 "find" => {
                     let _ = handle.cmd_tx.send(Cmd::Search(arg.to_string()));

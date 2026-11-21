@@ -243,6 +243,21 @@ pub struct Settings {
     /// Find other CyberCord users worldwide through the BitTorrent DHT.
     #[serde(default = "yes")]
     pub global: bool,
+    /// Closing the window keeps CyberCord running in the tray.
+    #[serde(default = "yes")]
+    pub background: bool,
+    /// Start with the system (hidden in the tray).
+    #[serde(default)]
+    pub autostart: bool,
+    /// Look for new users.
+    #[serde(default = "yes")]
+    pub scan: bool,
+    /// Desktop notifications for direct messages and mentions.
+    #[serde(default = "yes")]
+    pub notify: bool,
+    /// Status shown to others.
+    #[serde(default)]
+    pub status: String,
 }
 
 fn hundred() -> f32 {

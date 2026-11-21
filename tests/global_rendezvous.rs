@@ -28,6 +28,8 @@ fn nodes_meet_through_the_mainline_dht() {
             quic_port: port,
             listed: true,
             global: true,
+            scan: true,
+            status: String::new(),
         })
     };
     let a = node("ann", 47811);

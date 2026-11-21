@@ -137,6 +137,7 @@ fn decode(kind: MediaKind, bytes: &[u8]) -> Result<Decoded, String> {
             Ok(Decoded::Circle { frames, fps: clip.fps.max(1), audio })
         }
         MediaKind::Audio => Err("audio is shown by the music player".into()),
+        MediaKind::File => Err("files are downloaded on demand".into()),
     }
 }
 

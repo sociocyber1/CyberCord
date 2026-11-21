@@ -78,6 +78,16 @@ pub enum Cmd {
     Search(String),
     /// Be findable by name (or not).
     SetListed(bool),
+    /// Look for new users or not.
+    SetScan(bool),
+    /// Status shown to others.
+    SetStatus(String),
+    /// Share a local file of any size in a room (hashing runs in the background).
+    ShareFile { channel: ChannelId, path: PathBuf, body: String },
+    /// Queue a download; it starts whenever someone who has the file is online.
+    Download { hash: String, name: String, size: u64, channel: ChannelId },
+    PauseDownload { hash: String, paused: bool },
+    CancelDownload(String),
     /// Scan again now: saved nodes, friends, DHT.
     Rescan,
     Quit,
@@ -120,6 +130,8 @@ pub enum UiEvent {
     Nodes(Vec<NodeInfo>),
     /// People search results for `query`.
     Search { query: String, users: Vec<UserCard> },
+    /// Downloads and shared files (every second while anything changes).
+    Transfers(Vec<crate::transfer::TransferInfo>),
     /// Media download progress (chunks received / total).
     BlobProgress { hash: String, got: u32, total: u32 },
     /// Media is complete and verified on disk.
@@ -148,6 +160,11 @@ pub struct NetConfig {
     pub listed: bool,
     /// Use the public BitTorrent DHT as a global meeting point.
     pub global: bool,
+    /// Actively look for new users (peer exchange, LAN, global DHT). Off: keep
+    /// known nodes and friends only.
+    pub scan: bool,
+    /// User status shown to others ("", online, offline, work, sleep, …).
+    pub status: String,
 }
 
 pub fn spawn(cfg: NetConfig) -> NetworkHandle {
@@ -336,6 +353,20 @@ impl Book {
         v.sort_by(|a, b| b.1.cmp(&a.1));
         v.into_iter().map(|(p, _)| *p).collect()
     }
+}
+
+/// Results of background work (hashing a shared file, verifying a download).
+enum Bg {
+    Shared { channel: ChannelId, body: String, rec: crate::transfer::SharedRec, manifest: crate::transfer::Manifest },
+    ShareFailed(String),
+    Verified(String, bool),
+}
+
+fn spawn_verify(tx: tokio::sync::mpsc::UnboundedSender<Bg>, hash: String, path: PathBuf) {
+    std::thread::spawn(move || {
+        let ok = crate::transfer::hash_file(&path).map(|(h, _)| h == hash).unwrap_or(false);
+        let _ = tx.send(Bg::Verified(hash, ok));
+    });
 }
 
 /// Announce our display name in the DHT name index (one provider record per prefix).
@@ -546,10 +577,13 @@ async fn run(
     // Map + people directory.
     let mut link_of: HashMap<PeerId, &'static str> = HashMap::new();
     let mut dir: HashMap<String, (String, u64, bool)> = HashMap::new(); // peer -> (name, last heartbeat, listed)
+    let mut statuses: HashMap<String, String> = HashMap::new(); // peer -> status
     for r in store::load_directory() {
         dir.insert(r.peer, (r.name, r.last_seen_ms, true));
     }
     let mut listed = cfg.listed;
+    let mut scan = cfg.scan;
+    let mut status = cfg.status.clone();
     let mut provided: Vec<kad::RecordKey> = Vec::new();
     let mut search: Option<(String, Instant)> = None;
     let mut search_sig = String::new();
@@ -567,6 +601,17 @@ async fn run(
         drop(rv_tx);
     }
     let mut global_dialed: HashMap<std::net::SocketAddrV4, Instant> = HashMap::new();
+
+    // Torrent-like transfers.
+    let mut transfers = crate::transfer::Transfers::load();
+    let mut req_ids: HashMap<libp2p::request_response::OutboundRequestId, u64> = HashMap::new();
+    let mut next_req: u64 = 1;
+    let mut file_providers: HashMap<String, HashSet<PeerId>> = HashMap::new();
+    let mut provider_queries: HashMap<kad::QueryId, String> = HashMap::new();
+    let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel::<Bg>();
+    let mut last_transfers: Vec<crate::transfer::TransferInfo> = Vec::new();
+    let mut files_tick = tokio::time::interval(Duration::from_millis(250));
+    let mut seeding_announced = false;
     let mut global_addrs: HashSet<Multiaddr> = HashSet::new();
 
     let mut ticker = tokio::time::interval(Duration::from_secs(5));
@@ -606,7 +651,7 @@ async fn run(
                         voice_room = Some(channel.clone());
                         mic.store(false, Ordering::Relaxed);
                         emit(&event_tx, UiEvent::VoiceJoined { room: Some(format!("{}/{}", channel.guild, channel.channel)) });
-                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed };
+                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone() };
                         let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
                     }
                     Cmd::LeaveVoice => {
@@ -616,7 +661,7 @@ async fn run(
                         mic.store(false, Ordering::Relaxed);
                         voice_io = None;
                         emit(&event_tx, UiEvent::VoiceJoined { room: None });
-                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed };
+                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone() };
                         let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
                     }
                     Cmd::SetMic(on) => mic.store(on, Ordering::Relaxed),
@@ -668,6 +713,41 @@ async fn run(
                             search_sig.clear();
                         }
                     }
+                    Cmd::SetScan(on) => {
+                        scan = on;
+                        emit(&event_tx, UiEvent::Status(if on { "looking for new users".into() } else { "not looking for new users (known nodes and friends only)".into() }));
+                    }
+                    Cmd::SetStatus(st) => {
+                        status = st;
+                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone() };
+                        let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
+                    }
+                    Cmd::ShareFile { channel, path, body } => {
+                        let tx = bg_tx.clone();
+                        std::thread::spawn(move || {
+                            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                            let msg = if size > crate::transfer::MAX_FILE {
+                                Bg::ShareFailed(format!("file is too big (max {} GB)", crate::transfer::MAX_FILE >> 30))
+                            } else {
+                                match crate::transfer::hash_file(&path) {
+                                    Ok((hash, manifest)) => {
+                                        let name = crate::transfer::safe_name(&path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                                        Bg::Shared { channel, body, rec: crate::transfer::SharedRec { hash, name, size, path }, manifest }
+                                    }
+                                    Err(e) => Bg::ShareFailed(e.to_string()),
+                                }
+                            };
+                            let _ = tx.send(msg);
+                        });
+                    }
+                    Cmd::Download { hash, name: fname, size, channel } => {
+                        match transfers.add_download(&hash, &fname, size, channel) {
+                            Ok(()) => emit(&event_tx, UiEvent::Status(format!("{fname}: queued — downloads piece by piece whenever someone who has it is online"))),
+                            Err(e) => emit(&event_tx, UiEvent::Status(format!("{fname}: {e}"))),
+                        }
+                    }
+                    Cmd::PauseDownload { hash, paused } => transfers.set_paused(&hash, paused),
+                    Cmd::CancelDownload(hash) => transfers.cancel(&hash),
                     Cmd::SetListed(on) => {
                         listed = on;
                         if !on {
@@ -769,7 +849,7 @@ async fn run(
                 let score = 0.35 * (am_reachable as u8 as f64) + 0.3 * uptime_n + 0.25 * conns_n + 0.1 * stable_rand(&local_id);
                 scores.insert(local_id.clone(), (score, now_ms()));
                 last_score = score;
-                let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score, ts_ms: now_ms(), reachable: am_reachable, voice: public_room(&voice_room), listed };
+                let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score, ts_ms: now_ms(), reachable: am_reachable, voice: public_room(&voice_room), listed, status: status.clone() };
                 let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
                 recompute_hub(&scores, &mut last_hub, &event_tx);
 
@@ -880,6 +960,7 @@ async fn run(
             Some(found) = rv_rx.recv() => {
                 // Addresses that announced themselves under the CyberCord key.
                 let mut n = 0;
+                if !scan { continue; }
                 for sa in found {
                     if n >= 16 { break; }
                     let own = local_addrs.iter().any(|a| a.to_string().contains(&format!("/udp/{}/", sa.port())) && (sa.ip().is_loopback() || a.to_string().contains(&sa.ip().to_string())));
@@ -895,6 +976,91 @@ async fn run(
                 }
                 if n > 0 {
                     emit(&event_tx, UiEvent::Status(format!("global DHT: trying {n} announced CyberCord nodes")));
+                }
+            }
+
+            Some(bg) = bg_rx.recv() => {
+                match bg {
+                    Bg::Shared { channel, body, rec, manifest } => {
+                        let (hash, fname, size) = (rec.hash.clone(), rec.name.clone(), rec.size);
+                        transfers.add_shared(rec, manifest);
+                        let _ = swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&crate::transfer::provider_key(&hash)));
+                        let mut ev = ChatEvent::new(channel.clone(), name.clone(), body);
+                        ev.attach = Some(Attachment { hash, kind: MediaKind::File, name: fname, size, w: 0, h: 0, dur_ms: 0 });
+                        seen_ids.entry(channel.clone()).or_default().insert(ev.id.clone());
+                        store::append(&ev);
+                        emit(&event_tx, UiEvent::Chat(ev.clone()));
+                        let _ = swarm.behaviour_mut().gossipsub.publish(topic_for(&local_id, &channel), Wire::Chat(ev).encode());
+                    }
+                    Bg::ShareFailed(e) => emit(&event_tx, UiEvent::Status(format!("cannot share the file: {e}"))),
+                    Bg::Verified(hash, ok) => {
+                        for a in transfers.on_verified(&hash, ok) {
+                            if let crate::transfer::Action::Provide(h) = a {
+                                let _ = swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&crate::transfer::provider_key(&h)));
+                            }
+                        }
+                        emit(&event_tx, UiEvent::Status(if ok { "download finished and verified — now sharing it too".into() } else { "a download failed verification; starting it again from other nodes".into() }));
+                    }
+                }
+            }
+
+            _ = files_tick.tick() => {
+                if !seeding_announced && !connected_peers.is_empty() {
+                    seeding_announced = true;
+                    for h in transfers.seeding() {
+                        let _ = swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&crate::transfer::provider_key(&h)));
+                    }
+                }
+                // who is in which room (topic) right now
+                let mut members: HashMap<gossipsub::TopicHash, Vec<PeerId>> = HashMap::new();
+                for (p, topics) in swarm.behaviour().gossipsub.all_peers() {
+                    for t in topics {
+                        members.entry(t.clone()).or_default().push(*p);
+                    }
+                }
+                let provs = file_providers.clone();
+                let lid = local_id.clone();
+                let mut sends: Vec<(PeerId, crate::transfer::FileReq, u64)> = Vec::new();
+                let actions = transfers.tick(
+                    &connected_peers,
+                    |h, ch| {
+                        let mut v: Vec<PeerId> = members.get(&topic_for(&lid, ch).hash()).cloned().unwrap_or_default();
+                        if let Some(ps) = provs.get(h) {
+                            v.extend(ps.iter().copied());
+                        }
+                        v
+                    },
+                    &mut |peer, req| {
+                        let id = next_req;
+                        next_req += 1;
+                        sends.push((peer, req, id));
+                        id
+                    },
+                );
+                for (peer, req, id) in sends {
+                    let rid = swarm.behaviour_mut().files.send_request(&peer, req);
+                    req_ids.insert(rid, id);
+                }
+                for a in actions {
+                    match a {
+                        crate::transfer::Action::FindProviders(h) => {
+                            let q = swarm.behaviour_mut().kad.get_providers(kad::RecordKey::new(&crate::transfer::provider_key(&h)));
+                            provider_queries.insert(q, h);
+                        }
+                        crate::transfer::Action::Provide(h) => {
+                            let _ = swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&crate::transfer::provider_key(&h)));
+                        }
+                        crate::transfer::Action::Verify(h, path) => spawn_verify(bg_tx.clone(), h, path),
+                        crate::transfer::Action::AskRoom(h, ch) => {
+                            let _ = swarm.behaviour_mut().gossipsub.publish(topic_for(&local_id, &ch), Wire::FileWant { hash: h, nonce: rand::random() }.encode());
+                        }
+                        crate::transfer::Action::Request(..) => {}
+                    }
+                }
+                let infos = transfers.infos();
+                if infos != last_transfers {
+                    last_transfers = infos.clone();
+                    emit(&event_tx, UiEvent::Transfers(infos));
                 }
             }
 
@@ -915,6 +1081,7 @@ async fn run(
                             we_relay: relaying_for.contains(pid),
                             online: online(&id) || connected_peers.contains(pid),
                             last_seen_ms: e.last_seen.max(dir.get(&id).map(|d| d.1).unwrap_or(0)),
+                            status: statuses.get(&id).cloned().unwrap_or_default(),
                             peer: id,
                         }
                     })
@@ -922,7 +1089,7 @@ async fn run(
                 // users heard on the network but not (yet) in the address book
                 for (p, (n, t, _)) in dir.iter() {
                     if now.saturating_sub(*t) < 20_000 && !nodes.iter().any(|x| &x.peer == p) {
-                        nodes.push(NodeInfo { peer: p.clone(), name: Some(n.clone()), connected: false, link: "", source: "exchange", relays_us: false, we_relay: false, online: true, last_seen_ms: *t });
+                        nodes.push(NodeInfo { peer: p.clone(), name: Some(n.clone()), connected: false, link: "", source: "exchange", relays_us: false, we_relay: false, online: true, last_seen_ms: *t, status: statuses.get(p).cloned().unwrap_or_default() });
                     }
                 }
                 nodes.sort_by(|a, b| b.connected.cmp(&a.connected).then(b.online.cmp(&a.online)).then(b.last_seen_ms.cmp(&a.last_seen_ms)));
@@ -944,6 +1111,7 @@ async fn run(
                                 online: now.saturating_sub(*t) < 20_000,
                                 last_seen_ms: *t,
                                 via: if dht_found.contains(p) { "dht" } else { "network" },
+                                status: statuses.get(p).cloned().unwrap_or_default(),
                             })
                             .collect();
                         users.sort_by(|a, b| b.online.cmp(&a.online).then(a.name.to_lowercase().starts_with(&ql).cmp(&b.name.to_lowercase().starts_with(&ql)).reverse()).then(b.last_seen_ms.cmp(&a.last_seen_ms)));
@@ -1034,6 +1202,8 @@ async fn run(
                     SwarmEvent::Behaviour(CyberBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                         if cfg.no_mdns { continue; }
                         for (peer, addr) in list {
+                            let known = book.entries.contains_key(&peer) || friends.contains_key(&peer.to_base58());
+                            if !scan && !known { continue; }
                             book.learn(peer, [addr.clone()], "lan");
                             swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
                             dial_peer(&mut swarm, peer, vec![addr]);
@@ -1117,6 +1287,16 @@ async fn run(
                             for info in ok.peers {
                                 book.learn(info.peer_id, info.addrs.clone(), "dht");
                             }
+                        } else if let (Some(h), kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. }))) = (provider_queries.get(&id).cloned(), &result) {
+                            // Holders of a file we want: remember and meet them (≤ 8 dials).
+                            let set = file_providers.entry(h).or_default();
+                            for pid in providers.iter().filter(|p| **p != local_peer).take(8) {
+                                set.insert(*pid);
+                                if !connected_peers.contains(pid) {
+                                    let addrs = book.addrs(pid);
+                                    dial_peer(&mut swarm, *pid, addrs);
+                                }
+                            }
                         } else if let kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })) = result {
                             // People search through the DHT name index: meet these users so
                             // their heartbeat (name) reaches us. At most 8 dials per answer.
@@ -1134,6 +1314,7 @@ async fn run(
                         }
                         if step.last {
                             search_queries.remove(&id);
+                            provider_queries.remove(&id);
                         }
                         if step.last {
                             if let Some(target) = pending_lookups.remove(&id) {
@@ -1144,6 +1325,32 @@ async fn run(
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // ---- file pieces (torrent-like) ----
+                    SwarmEvent::Behaviour(CyberBehaviourEvent::Files(ev)) => {
+                        use libp2p::request_response::{Event as RrEvent, Message as RrMsg};
+                        match ev {
+                            RrEvent::Message { message: RrMsg::Request { request, channel, .. }, .. } => {
+                                let resp = transfers.serve(request);
+                                let _ = swarm.behaviour_mut().files.send_response(channel, resp);
+                            }
+                            RrEvent::Message { message: RrMsg::Response { request_id, response }, .. } => {
+                                if let Some(id) = req_ids.remove(&request_id) {
+                                    for a in transfers.on_response(id, response) {
+                                        if let crate::transfer::Action::Verify(h, path) = a {
+                                            spawn_verify(bg_tx.clone(), h, path);
+                                        }
+                                    }
+                                }
+                            }
+                            RrEvent::OutboundFailure { request_id, .. } => {
+                                if let Some(id) = req_ids.remove(&request_id) {
+                                    transfers.on_failure(id);
+                                }
+                            }
+                            _ => {}
                         }
                     }
 
@@ -1178,7 +1385,7 @@ async fn run(
                                         names.entry(message_author(&message).unwrap_or_default()).or_insert(ev.name.clone());
                                     }
                                     if let Some(a) = &ev.attach {
-                                        if !store::has_blob(&a.hash) && a.size as usize <= MAX_BLOB {
+                                        if a.kind != MediaKind::File && !store::has_blob(&a.hash) && a.size as usize <= MAX_BLOB {
                                             wanted.entry(a.hash.clone()).or_insert((ev.channel.clone(), Instant::now(), 0));
                                         }
                                     }
@@ -1204,6 +1411,7 @@ async fn run(
                                 names.insert(rec.peer.clone(), rec.name.clone());
                                 if rec.peer != local_id {
                                     dir.insert(rec.peer.clone(), (rec.name.clone(), now_ms(), rec.listed));
+                                    statuses.insert(rec.peer.clone(), rec.status.clone());
                                 }
                                 scores.insert(rec.peer.clone(), (rec.score, rec.ts_ms));
                                 emit(&event_tx, UiEvent::VoiceRoster { peer: rec.peer.clone(), name: rec.name.clone(), room: rec.voice.clone() });
@@ -1228,7 +1436,7 @@ async fn run(
                                         fresh.push(pid);
                                     }
                                 }
-                                if connected_peers.len() < TARGET_CONNECTIONS {
+                                if scan && connected_peers.len() < TARGET_CONNECTIONS {
                                     for pid in fresh.into_iter().take(DIALS_PER_ROUND) {
                                         let addrs = book.addrs(&pid);
                                         dial_peer(&mut swarm, pid, addrs);
@@ -1267,6 +1475,17 @@ async fn run(
                                         emit(&event_tx, UiEvent::BlobReady { hash });
                                     } else {
                                         tracing::warn!("media {hash} failed verification; discarded");
+                                    }
+                                }
+                            }
+                            Wire::FileWant { hash, .. } => {
+                                // We have (part of) it: connect to the asker so it can download from us.
+                                if transfers.has_any(&hash) {
+                                    if let Some(src) = message.source {
+                                        if src != local_peer && !connected_peers.contains(&src) {
+                                            let addrs = book.addrs(&src);
+                                            dial_peer(&mut swarm, src, addrs);
+                                        }
                                     }
                                 }
                             }

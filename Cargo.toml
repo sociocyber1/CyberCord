@@ -1,7 +1,8 @@
 [package]
 name = "cybercord-node"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
+rust-version = "1.80"
 description = "CyberCord — serverless peer-to-peer chat (SocioCyberneering Inc.)"
 license = "MIT OR Apache-2.0"
 
@@ -17,7 +18,7 @@ path = "src/main.rs"
 libp2p = { version = "0.54", features = [
     "tokio", "tcp", "quic", "noise", "yamux",
     "gossipsub", "mdns", "identify", "ping", "ed25519", "macros",
-    "kad", "relay", "dcutr", "upnp",
+    "kad", "relay", "dcutr", "upnp", "request-response", "cbor",
 ] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time", "signal", "sync"] }
 futures = "0.3"
@@ -40,6 +41,10 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg"] }
 # Music messages: pure-Rust decoding of mp3 / flac / ogg-vorbis / wav / m4a-aac.
 mainline = "8"
+# Desktop notifications (D-Bus on Linux, toast on Windows).
+notify-rust = "4"
+# Torrent-like file transfer messages.
+serde_bytes = "0.11"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac", "ogg", "vorbis", "wav", "pcm", "aac", "isomp4"] }
 sys-locale = "0.3"
 
@@ -55,3 +60,11 @@ futures = "0.3"
 [profile.release]
 opt-level = 2
 strip = true
+
+# System tray: StatusNotifierItem over D-Bus on Linux (Xfce, GNOME with the
+# AppIndicator extension, KDE), native tray on Windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", features = ["blocking"] }
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.21"

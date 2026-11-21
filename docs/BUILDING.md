@@ -22,6 +22,15 @@ cargo build --release --features voice,camera   # + микрофон и звук
 
 Окно рисуется через eframe/egui (OpenGL), отдельный GTK не нужен.
 
+Трей:
+
+- **Linux** — StatusNotifierItem через D-Bus (`ksni`, без GTK). Показывают
+  Xfce («Status Tray»), KDE, Cinnamon, MATE. В GNOME нужно расширение
+  «AppIndicator and KStatusNotifierItem Support».
+- **Windows** — `tray-icon`.
+
+Уведомления — `notify-rust` (D-Bus / Windows toast).
+
 ## Параметры запуска
 
 | Параметр | Значение |
@@ -32,10 +41,12 @@ cargo build --release --features voice,camera   # + микрофон и звук
 | `--no-mdns` | не искать в локальной сети |
 | `--tcp-port N --quic-port N` | порты (по умолчанию 47100) |
 | `--identity ФАЙЛ` | другой файл ключа |
+| `--minimized` | запуститься свёрнутым в трей (так делает автозапуск) |
 
 Переменные окружения: `CYBERCORD_DATA_DIR` (папка данных, по умолчанию
 `~/.local/share/cybercord`), `CYBERCORD_NO_GLOBAL=1` (без DHT BitTorrent),
-`CYBERCORD_TEST_CAMERA=1` (тестовая камера), `CYBERCORD_ALLOW_LOOPBACK=1` (для тестов на одной машине).
+`CYBERCORD_TEST_CAMERA=1` (тестовая камера), `CYBERCORD_DOWNLOADS` (папка загрузок),
+`CYBERCORD_NO_TRAY=1` (без трея), `CYBERCORD_ALLOW_LOOPBACK=1` (для тестов на одной машине).
 
 ## Иконки и иллюстрации
 

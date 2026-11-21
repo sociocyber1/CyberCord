@@ -2,7 +2,7 @@
   <img src="assets/icon.svg" width="96" alt="CyberCord">
 </p>
 
-<h1 align="center">CyberCord 0.9</h1>
+<h1 align="center">CyberCord 0.10</h1>
 <p align="center"><b>Чат, голос, музыка и видео-кружки без серверов</b> — SocioCyberneering Inc. Communication Cooperations</p>
 
 <p align="center">
@@ -29,15 +29,61 @@ CyberCord похож на Discord, но у него нет центрально�
 **Документация:**
 
 - [Как устроен протокол](docs/PROTOCOL.md) — транспорт, поиск нод без серверов,
-  темы, сообщения, история, файлы, голос, хаб, поиск людей, безопасность;
-- [Сборка](docs/BUILDING.md) — зависимости, параметры запуска;
+  темы, сообщения, история, файлы как в торренте, голос, хаб, поиск людей,
+  статусы, безопасность;
+- [Сборка](docs/BUILDING.md) — зависимости, трей, параметры запуска;
 - [Как проверить без других людей](docs/TESTING.md) — автотесты и несколько нод
   на одном компьютере;
 - [Концепция (PDF)](docs/concept/cybercord-concept.pdf) — исходный документ
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
 
-## Что нового в 0.9
+## Что нового в 0.10
+
+- **Работа в фоне и трей.** Крестик не закрывает CyberCord, а прячет в трей:
+  нода продолжает передавать сообщения, служить relay и раздавать файлы.
+  - Меню трея:
+    - **Открыть CyberCord**;
+    - **Искать новых пользователей** (вкл/выкл);
+    - **Статус**;
+    - **Уведомления**;
+    - **Выход**.
+  - Где работает трей:
+    - **Xfce** — элемент панели «Status Tray»;
+    - **KDE, Cinnamon, MATE** — без дополнительных настроек;
+    - **GNOME** — нужно расширение «AppIndicator and KStatusNotifierItem Support»
+      (в Ubuntu уже стоит);
+    - **Windows 10/11** — область уведомлений.
+
+    Если трея нет, окно при закрытии сворачивается, а нода всё равно работает.
+  - Можно включить **автозапуск вместе с системой** свёрнутым в трей
+    (Настройки → Фоновая работа).
+- **Статусы:**
+  - без статуса, в сети, невидимка;
+  - работаю, сплю, чем-то занят(а), учусь, отдыхаю, играю, читаю.
+
+  Статус видят друзья, участники каналов, поиск и карта. Выбирается по клику на
+  своё имя внизу слева или в трее.
+- **Уведомления** о личных сообщениях и упоминаниях вашего имени, когда окно
+  скрыто или не в фокусе.
+- **Файлы как в торренте** — любой файл до 8 ГБ:
+  - перетащите файл в чат, у всех появится карточка с кнопкой **«Скачать»**;
+  - файл качается кусками по 256 КБ сразу у всех, у кого он есть, каждый кусок
+    проверяется по хэшу, в конце проверяется файл целиком;
+  - **если сейчас никого с файлом нет**, загрузка ждёт и начинается сама, когда
+    в сети появится кто-то с этим файлом — не обязательно автор;
+  - недокачанное **переживает перезапуск**: продолжается с того же места;
+  - скачанное вы раздаёте дальше, недокачанные куски — тоже;
+  - экран **«Загрузки и раздачи»** — кнопка «⬇ Загрузки» внизу справа;
+  - файлы сохраняются в `~/Загрузки/CyberCord` (папка загрузок системы).
+
+![Файлы в чате](docs/img/screen-files.png)
+
+![Загрузки и раздачи](docs/img/screen-downloads.png)
+
+![Фоновая работа](docs/img/screen-background.png)
+
+## Что было в 0.9
 
 - **Карта сети** (иконка с узлами на левой панели).
   - Вы в центре, вокруг на орбитах:
@@ -188,12 +234,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.9.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.10.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.9.0-linux-x86_64.tar.gz
-cd cybercord-0.9.0-linux-x86_64
+tar xf cybercord-0.10.0-linux-x86_64.tar.gz
+cd cybercord-0.10.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -337,6 +383,10 @@ scripts/peers.sh 3                      # 3 консольных узла на �
 | `/devices` | список микрофонов и колонок |
 | `/find кар` | найти людей по имени |
 | `/nodes` | ноды, которые знает эта нода (карта сети в тексте) |
+| `/share файл` | поделиться файлом любого размера (как торрент) |
+| `/get имя` | скачать файл из канала (ждёт, если владельцев нет в сети) |
+| `/files` | загрузки и раздачи |
+| `/pause`, `/resume`, `/cancel имя` | управление загрузкой |
 | `/code` | показать свой код подключения |
 | `/addfriend Имя <код>` | добавить друга |
 | `/dm Имя текст` | написать другу |
@@ -387,6 +437,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.10:** runs in the background with a tray icon (Xfce/KDE/GNOME+AppIndicator via StatusNotifierItem over D-Bus, Windows notification area): Open · Look for new users · Status · Notifications · Quit; autostart; user statuses; desktop notifications for DMs and mentions; torrent-like file sharing up to 8 GB (256 KB verified pieces from several nodes, queue while nobody has it, resume after restart, every downloader seeds).
 
 **0.9:** network map (you in the centre; connected / online / known orbits; link type; click a node to add or message), people search (heartbeat directory + Kademlia name-prefix index), and a global rendezvous through the BitTorrent Mainline DHT — reachable nodes announce under one CyberCord key, everyone else looks it up; no servers of our own, nothing is scanned. Toggles in Settings → Privacy.
 

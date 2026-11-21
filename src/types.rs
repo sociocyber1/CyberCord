@@ -64,6 +64,8 @@ pub enum MediaKind {
     Circle,
     /// A music / audio file (mp3, flac, ogg, wav, m4a) with an in-chat player.
     Audio,
+    /// Any file, downloaded on demand piece by piece (torrent-like).
+    File,
 }
 
 /// Media attached to a message. The bytes travel separately as a blob identified
@@ -100,6 +102,10 @@ pub struct ScoreRec {
     /// The user agreed to be found by name in people search.
     #[serde(default = "yes")]
     pub listed: bool,
+    /// User status: "", online, offline (appear offline), work, sleep, busy,
+    /// learning, relax, play, read.
+    #[serde(default)]
+    pub status: String,
 }
 
 fn yes() -> bool {
@@ -123,6 +129,7 @@ pub struct NodeInfo {
     /// Seen a heartbeat from it recently (online somewhere in the network).
     pub online: bool,
     pub last_seen_ms: u64,
+    pub status: String,
 }
 
 /// A person found by people search.
@@ -134,6 +141,7 @@ pub struct UserCard {
     pub last_seen_ms: u64,
     /// "network" (heard on the network), "dht" (found through the DHT name index).
     pub via: &'static str,
+    pub status: String,
 }
 
 /// DHT key for a name prefix (people search): providers of this key are users
@@ -209,6 +217,12 @@ pub enum Wire {
     /// `round` differs between re-sends so gossip does not drop them as duplicates.
     BlobChunk { hash: String, idx: u32, total: u32, round: u64, data: String },
     /// "Who has this blob? Please send it again" (channel / DM topic).
+    /// "Who has this file?" — holders connect to the asker for a torrent-like download.
+    FileWant {
+        hash: String,
+        #[serde(default)]
+        nonce: u64,
+    },
     BlobReq {
         hash: String,
         #[serde(default)]

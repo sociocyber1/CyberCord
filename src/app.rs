@@ -142,6 +142,17 @@ pub struct CyberApp {
     guide_step: usize,
     guide_changed: Instant,
     music: Music,
+    // background + tray
+    tray: Option<crate::tray::Tray>,
+    tray_rx: std::sync::mpsc::Receiver<crate::tray::TrayCmd>,
+    quitting: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<std::sync::Mutex<NotifyState>>,
+    hidden: bool,
+    bg_hint_shown: bool,
+    tray_sig: String,
+    pending_minimize: bool,
+    /// Demo/test: press the window's close button after a delay.
+    demo_close_at: Option<Instant>,
     /// Demo/screenshot helper ($CYBERCORD_START=play): start the first track shown.
     autoplay: bool,
     // voice message being recorded: recorder, start, level history for the live waveform
@@ -162,6 +173,8 @@ pub struct CyberApp {
     search_res: Vec<cybercord_node::types::UserCard>,
     show_map: bool,
     map: MapState,
+    transfers: Vec<cybercord_node::transfer::TransferInfo>,
+    show_downloads: bool,
 }
 
 impl CyberApp {
@@ -172,8 +185,20 @@ impl CyberApp {
         let lang = i18n::resolve(&settings.lang);
         install_fonts(&cc.egui_ctx, lang);
         let name = cfg.name.clone();
-        let handle = net::spawn(cfg);
+        let mut handle = net::spawn(cfg);
         let tour = if settings.tour_done { None } else { Some(0) };
+        // Events go through a pump thread: it wakes the UI and shows desktop
+        // notifications even while the window is hidden in the tray.
+        let notify = Arc::new(std::sync::Mutex::new(NotifyState { enabled: settings.notify, my_name: name.clone(), active: true, lang }));
+        let (ev_tx, ev_rx) = std::sync::mpsc::channel();
+        let net_rx = std::mem::replace(&mut handle.event_rx, ev_rx);
+        spawn_event_pump(net_rx, ev_tx, cc.egui_ctx.clone(), notify.clone());
+        // Tray (+ a router so tray actions work while no frames are drawn).
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel::<crate::tray::TrayCmd>();
+        let (ui_tray_tx, ui_tray_rx) = std::sync::mpsc::channel::<crate::tray::TrayCmd>();
+        let quitting = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        spawn_tray_router(tray_rx, ui_tray_tx, handle.cmd_tx.clone(), notify.clone(), quitting.clone());
+        let tray = crate::tray::start(tray_state(&settings, lang, 0, 0), tray_tx, cc.egui_ctx.clone(), APP_ICON);
         Self {
             handle,
             self_id: String::new(),
@@ -227,6 +252,15 @@ impl CyberApp {
             guide_step: 0,
             guide_changed: Instant::now(),
             music: Music::default(),
+            tray,
+            tray_rx: ui_tray_rx,
+            quitting,
+            notify,
+            hidden: false,
+            bg_hint_shown: false,
+            tray_sig: String::new(),
+            pending_minimize: false,
+            demo_close_at: None,
             autoplay: false,
             vm: None,
             vm_last_level: Instant::now(),
@@ -241,6 +275,8 @@ impl CyberApp {
             search_res: Vec::new(),
             show_map: false,
             map: MapState::default(),
+            transfers: Vec::new(),
+            show_downloads: false,
             mic_test_msg: None,
             test_player: None,
         }
@@ -269,6 +305,18 @@ impl CyberApp {
                         self.monitor = voice_rec::Monitor::start();
                     }
                     "voicetab" => self.set_tab = SetTab::Voice,
+                    "downloads" => {
+                        self.show_downloads = true;
+                        self.show_home = false;
+                    }
+                    "bgtab" => {
+                        self.show_settings = true;
+                        self.set_tab = SetTab::Background;
+                    }
+                    p if p.starts_with("closeafter:") => {
+                        let secs: u64 = p[11..].parse().unwrap_or(3);
+                        self.demo_close_at = Some(Instant::now() + Duration::from_secs(secs));
+                    }
                     "map" => {
                         self.show_map = true;
                         self.show_home = false;
@@ -323,7 +371,7 @@ impl CyberApp {
     }
 
     fn chat_visible(&self) -> bool {
-        !self.show_map && !self.show_home && (!self.show_friends || self.dm_open.is_some())
+        !self.show_downloads && !self.show_map && !self.show_home && (!self.show_friends || self.dm_open.is_some())
     }
 
     fn friend_name(&self, peer: &str) -> String {
@@ -401,6 +449,7 @@ impl CyberApp {
                     }
                 }
                 UiEvent::Nodes(list) => self.nodes = list,
+                UiEvent::Transfers(list) => self.transfers = list,
                 UiEvent::Search { query, users } => {
                     if query == self.search_q.trim() {
                         self.search_res = users;
@@ -458,6 +507,30 @@ impl CyberApp {
     }
 
     /// Send a GIF / image file (from a path or dropped bytes) to the open room.
+    /// Send a file from disk: small pictures/GIFs/music inline, anything else
+    /// (any type, up to 8 GB) as a torrent-like shared file.
+    fn send_path(&mut self, path: std::path::PathBuf) {
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let mut head = [0u8; 64];
+        let n = std::fs::File::open(&path).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+        let inline = size as usize <= MAX_BLOB && matches!(media::sniff(&head[..n]), Some(MediaKind::Gif | MediaKind::Image | MediaKind::Audio));
+        if inline {
+            if let Ok(b) = std::fs::read(&path) {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                self.send_file(name, b);
+                return;
+            }
+        }
+        if !self.chat_visible() {
+            self.show_home = false;
+        }
+        let channel = self.active_channel();
+        let _ = self.handle.cmd_tx.send(Cmd::ShareFile { channel, path, body: String::new() });
+        self.popup = Popup::None;
+        let m = self.t("file_sharing_prep").to_string();
+        self.toast(m);
+    }
+
     fn send_file(&mut self, name: String, bytes: Vec<u8>) {
         if !self.chat_visible() {
             self.show_home = false;
@@ -655,6 +728,7 @@ impl CyberApp {
 impl eframe::App for CyberApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.background_and_tray(ctx);
         self.media.poll(ctx);
         self.poll_music();
         // theme / zoom changes take effect on the next frame
@@ -690,6 +764,10 @@ impl eframe::App for CyberApp {
         // Files dropped onto the window are sent to the open room.
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for f in dropped {
+            if let Some(p) = &f.path {
+                self.send_path(p.clone());
+                continue;
+            }
             let bytes = match (&f.bytes, &f.path) {
                 (Some(b), _) => Some(b.to_vec()),
                 (None, Some(p)) => std::fs::read(p).ok(),
@@ -711,7 +789,9 @@ impl eframe::App for CyberApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(th().window).inner_margin(egui::Margin::same(16.0)))
             .show(ctx, |ui| {
-                if self.show_map {
+                if self.show_downloads {
+                    self.downloads_view(ui);
+                } else if self.show_map {
                     self.map_view(ui);
                 } else if self.show_home {
                     self.home_view(ui);
@@ -756,6 +836,7 @@ impl CyberApp {
                             self.show_home = true;
                             self.show_friends = false;
                             self.show_map = false;
+                            self.show_downloads = false;
                         }
                         ui.add_space(8.0);
                         let fr_on = self.show_friends && !self.show_home && !self.show_map;
@@ -768,6 +849,7 @@ impl CyberApp {
                             self.show_friends = true;
                             self.show_home = false;
                             self.show_map = false;
+                            self.show_downloads = false;
                         }
                         ui.add_space(8.0);
                         let tex = self.icons.get(ui.ctx(), "network", NETWORK_TILE);
@@ -778,6 +860,7 @@ impl CyberApp {
                             self.show_map = true;
                             self.show_home = false;
                             self.show_friends = false;
+                            self.show_downloads = false;
                         }
                         ui.add_space(8.0);
                         let (r, _) = ui.allocate_exact_size(egui::vec2(32.0, 2.0), egui::Sense::hover());
@@ -801,6 +884,7 @@ impl CyberApp {
                                 self.show_home = false;
                                 self.show_friends = false;
                                 self.show_map = false;
+                                self.show_downloads = false;
                             }
                             ui.add_space(8.0);
                         }
@@ -827,7 +911,18 @@ impl CyberApp {
                         avatar(ui, &initial, 16.0, th().accent, if self.mic_on && self.in_voice.is_some() { Some(th().green) } else { None });
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&self.self_name).color(th().ink).b());
-                            ui.colored_label(th().ink2, RichText::new(short(&self.self_id)).small());
+                            let st = self.settings.status.clone();
+                            let label = if st.is_empty() { short(&self.self_id) } else { self.status_label(&st).to_string() };
+                            let col = status_color(&st).unwrap_or(th().ink2);
+                            ui.menu_button(RichText::new(format!("● {label}")).color(col).small(), |ui| {
+                                for (sid, key) in crate::tray::STATUSES {
+                                    let text = RichText::new(format!("●  {}", self.t(key))).color(status_color(sid).unwrap_or(th().ink2));
+                                    if ui.selectable_label(st == *sid, text).clicked() {
+                                        self.set_status(sid);
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let gear = self.icons.get(ui.ctx(), "gear", SYM_GEAR);
@@ -964,8 +1059,17 @@ impl CyberApp {
                         (name, self.role_of(id), pv.connected, talking, in_voice)
                     })
                     .collect();
-                for (name, role, conn, talking, in_voice) in rows {
+                let ids: Vec<String> = self.peers.keys().filter(|id| **id != self.self_id).cloned().collect();
+                for ((name, role, conn, talking, in_voice), id) in rows.into_iter().zip(ids) {
+                    let st = self.status_of(&id);
+                    let conn = conn && st != "offline";
                     member_row(ui, &name, role, conn, talking, in_voice.then_some(spk));
+                    if conn && !st.is_empty() && st != "online" {
+                        ui.horizontal(|ui| {
+                            ui.add_space(38.0);
+                            ui.colored_label(status_color(&st).unwrap_or(th().ink2), RichText::new(self.status_label(&st)).size(11.0));
+                        });
+                    }
                 }
             });
     }
@@ -984,6 +1088,12 @@ impl CyberApp {
                     let hub = self.hub.as_deref().map(short).unwrap_or_else(|| "—".into());
                     ui.colored_label(th().ink2, RichText::new(format!("{}: {hub}", self.t("hub_label"))).small());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let active = self.transfers.iter().filter(|t| matches!(t.state, "downloading" | "waiting" | "verifying")).count();
+                        let label = if active > 0 { format!("⬇ {} ({active})", self.t("downloads_btn")) } else { format!("⬇ {}", self.t("downloads_btn")) };
+                        if ui.add(egui::Button::new(RichText::new(label).small().color(if self.show_downloads { th().accent } else { th().ink2 })).frame(false)).clicked() {
+                            self.show_downloads = !self.show_downloads;
+                        }
+                        ui.separator();
                         let (txt, col) = if self.net.scanning {
                             (self.t("scanning_bar").replace("{n}", &self.net.known.to_string()), th().accent)
                         } else {
@@ -1012,15 +1122,28 @@ impl CyberApp {
         if self.friends.is_empty() {
             ui.colored_label(th().ink2, self.t("no_friends"));
         }
-        let mut list: Vec<(String, String, bool)> = self.friends.iter().map(|(p, f)| (p.clone(), f.name.clone(), f.online)).collect();
+        let mut list: Vec<(String, String, bool, String)> = self
+            .friends
+            .iter()
+            .map(|(p, f)| {
+                let st = self.status_of(p);
+                (p.clone(), f.name.clone(), f.online && st != "offline", st)
+            })
+            .collect();
         list.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
-        for (peer, name, on) in list {
+        for (peer, name, on, st) in list {
             let selected = self.dm_open.as_deref() == Some(peer.as_str());
             ui.horizontal(|ui| {
-                dot(ui, if on { th().green } else { th().line });
-                if ui.selectable_label(selected, RichText::new(&name).color(if on { th().ink } else { th().ink2 })).clicked() {
-                    self.dm_open = Some(peer.clone());
-                }
+                let dotc = if !on { th().line } else { status_color(&st).unwrap_or(th().green) };
+                dot(ui, dotc);
+                ui.vertical(|ui| {
+                    if ui.selectable_label(selected, RichText::new(&name).color(if on { th().ink } else { th().ink2 })).clicked() {
+                        self.dm_open = Some(peer.clone());
+                    }
+                    if on && !st.is_empty() && st != "online" {
+                        ui.colored_label(th().ink2, RichText::new(self.status_label(&st)).size(11.0));
+                    }
+                });
             });
         }
     }
@@ -1346,6 +1469,10 @@ impl CyberApp {
             self.music_widget(ui, a);
             return;
         }
+        if a.kind == MediaKind::File {
+            self.file_widget(ui, a, ch);
+            return;
+        }
         let time = ui.input(|i| i.time);
         enum Draw {
             Still(egui::TextureId, Vec2),
@@ -1589,10 +1716,9 @@ impl CyberApp {
             ui.add(egui::TextEdit::singleline(&mut self.file_path).hint_text(hint).desired_width(ui.available_width() - 90.0));
             if ui.add(egui::Button::new(RichText::new(self.t("send")).color(th().on_accent)).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
                 let path = expand_home(self.file_path.trim());
-                match std::fs::read(&path) {
-                    Ok(b) => {
-                        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                        self.send_file(name, b);
+                match std::fs::metadata(&path) {
+                    Ok(_) => {
+                        self.send_path(std::path::PathBuf::from(&path));
                         self.file_path.clear();
                     }
                     Err(e) => self.toast(format!("{path}: {e}")),
@@ -2043,17 +2169,19 @@ fn load_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).ok()
 }
 
-pub fn run_gui(cfg: NetConfig) -> eframe::Result<()> {
+pub fn run_gui(cfg: NetConfig, minimized: bool) -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1180.0, 760.0])
         .with_min_inner_size([900.0, 560.0])
         .with_title("CyberCord — SocioCyberneering Inc.")
+        .with_app_id("cybercord")
+        .with_visible(!minimized)
         .with_drag_and_drop(true);
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(Arc::new(icon));
     }
     let native_options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("CyberCord", native_options, Box::new(move |cc| Ok(Box::new(CyberApp::new(cc, cfg)))))
+    eframe::run_native("CyberCord", native_options, Box::new(move |cc| Ok(Box::new(CyberApp::new(cc, cfg).started_hidden(minimized)))))
 }
 
 // ---- music messages ----
@@ -2424,6 +2552,7 @@ enum SetTab {
     Help,
     About,
     Privacy,
+    Background,
 }
 
 impl CyberApp {
@@ -2437,11 +2566,12 @@ impl CyberApp {
         if k < 1.0 {
             ctx.request_repaint();
         }
-        let tabs: [(SetTab, &'static str); 6] = [
+        let tabs: [(SetTab, &'static str); 7] = [
             (SetTab::Appearance, "set_appearance"),
             (SetTab::Voice, "set_voice"),
             (SetTab::Language, "language"),
             (SetTab::Privacy, "set_privacy"),
+            (SetTab::Background, "set_background"),
             (SetTab::Help, "set_help"),
             (SetTab::About, "about"),
         ];
@@ -2516,6 +2646,7 @@ impl CyberApp {
                         SetTab::Language => self.tab_language(ui),
                         SetTab::Help => self.tab_help(ui),
                         SetTab::About => self.tab_about(ui),
+                        SetTab::Background => self.tab_background(ui),
                         SetTab::Privacy => {
                             let label = self.t("listed_opt");
                             if ui.checkbox(&mut self.settings.listed, label).changed() {
@@ -3022,7 +3153,8 @@ impl CyberApp {
                 avatar(ui, &initial, 15.0, name_color(&u.name), u.online.then_some(c.green));
                 ui.vertical(|ui| {
                     ui.label(RichText::new(&u.name).color(c.ink).b());
-                    let status = if u.online { self.t("lg_online").to_string() } else { self.t("last_seen").replace("{t}", &self.ago(u.last_seen_ms)) };
+                    let online = u.online && u.status != "offline";
+                    let status = if online && !u.status.is_empty() { self.status_label(&u.status).to_string() } else if online { self.t("lg_online").to_string() } else { self.t("last_seen").replace("{t}", &self.ago(u.last_seen_ms)) };
                     let via = if u.via == "dht" { format!(" · {}", self.t("find_dht")) } else { String::new() };
                     ui.colored_label(c.ink2, RichText::new(format!("{status} · {}{via}", short(&u.peer))).small());
                 });
@@ -3232,6 +3364,9 @@ impl CyberApp {
                                     self.t("last_seen").replace("{t}", &self.ago(n.last_seen_ms))
                                 };
                                 ui.colored_label(c.ink, status);
+                                if !n.status.is_empty() {
+                                    ui.colored_label(status_color(&n.status).unwrap_or(c.ink2), format!("● {}", self.status_label(&n.status)));
+                                }
                                 ui.colored_label(c.ink2, self.t("found_via").replace("{s}", self.src_label(n.source)));
                                 if n.relays_us {
                                     ui.colored_label(c.ink2, self.t("relays_us"));
@@ -3262,5 +3397,499 @@ impl CyberApp {
                 });
             });
         });
+    }
+}
+
+// ---- background (tray) + desktop notifications ----
+
+pub struct NotifyState {
+    pub enabled: bool,
+    pub my_name: String,
+    /// Window visible and focused (no notifications then).
+    pub active: bool,
+    pub lang: Lang,
+}
+
+/// Forward network events to the UI, wake it, and raise desktop notifications
+/// for direct messages and mentions while the window is not in front.
+fn spawn_event_pump(rx: std::sync::mpsc::Receiver<UiEvent>, tx: std::sync::mpsc::Sender<UiEvent>, ctx: egui::Context, st: Arc<std::sync::Mutex<NotifyState>>) {
+    std::thread::Builder::new()
+        .name("event-pump".into())
+        .spawn(move || {
+            let started = now_ms();
+            let mut seen: HashSet<String> = HashSet::new();
+            while let Ok(ev) = rx.recv() {
+                if let UiEvent::Chat(m) = &ev {
+                    let (enabled, me, active, lang) = st.lock().map(|s| (s.enabled, s.my_name.clone(), s.active, s.lang)).unwrap_or((false, String::new(), true, Lang::En));
+                    // only fresh messages (not history arriving by sync), once each
+                    let fresh = m.ts_ms + 120_000 > now_ms() && m.ts_ms + 5_000 > started;
+                    if enabled && !active && fresh && m.name != me && seen.insert(m.id.clone()) {
+                        let mention = me.chars().count() >= 2 && m.body.to_lowercase().contains(&me.to_lowercase());
+                        if m.channel.is_dm() || mention {
+                            let title = if m.channel.is_dm() { m.name.clone() } else { format!("{} · #{}", m.name, m.channel.channel) };
+                            let mut body: String = emoji::shortcodes_to_unicode(&m.body).chars().take(160).collect();
+                            if body.is_empty() && m.attach.is_some() {
+                                body = "📎".into();
+                            }
+                            notify_desktop(&title, &body);
+                        }
+                    }
+                    let _ = lang;
+                }
+                if tx.send(ev).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+            }
+        })
+        .ok();
+}
+
+fn notify_desktop(title: &str, body: &str) {
+    let (title, body) = (title.to_string(), body.to_string());
+    std::thread::spawn(move || {
+        let _ = notify_rust::Notification::new().appname("CyberCord").summary(&title).body(&body).icon("cybercord").show();
+    });
+}
+
+/// Applies tray actions right away (network, notifications, settings file) and
+/// passes them on to the UI, which may not be drawing while hidden.
+fn spawn_tray_router(
+    rx: std::sync::mpsc::Receiver<crate::tray::TrayCmd>,
+    ui: std::sync::mpsc::Sender<crate::tray::TrayCmd>,
+    net: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    notify: Arc<std::sync::Mutex<NotifyState>>,
+    quitting: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use crate::tray::{TrayCmd, STATUSES};
+    std::thread::Builder::new()
+        .name("tray-router".into())
+        .spawn(move || {
+            while let Ok(cmd) = rx.recv() {
+                let mut st = store::load_settings();
+                match &cmd {
+                    TrayCmd::SetScan(on) => {
+                        st.scan = *on;
+                        let _ = net.send(Cmd::SetScan(*on));
+                    }
+                    TrayCmd::SetStatus(i) => {
+                        st.status = STATUSES.get(*i).map(|s| s.0.to_string()).unwrap_or_default();
+                        let _ = net.send(Cmd::SetStatus(st.status.clone()));
+                    }
+                    TrayCmd::SetNotify(on) => {
+                        st.notify = *on;
+                        if let Ok(mut n) = notify.lock() {
+                            n.enabled = *on;
+                        }
+                    }
+                    TrayCmd::Quit => {
+                        quitting.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let _ = net.send(Cmd::Quit);
+                    }
+                    TrayCmd::Open => {}
+                }
+                if !matches!(cmd, TrayCmd::Open | TrayCmd::Quit) {
+                    store::save_settings(&st);
+                }
+                if ui.send(cmd).is_err() {
+                    return;
+                }
+            }
+        })
+        .ok();
+}
+
+fn tray_state(s: &Settings, lang: Lang, online: usize, connected: usize) -> crate::tray::TrayState {
+    use crate::tray::{status_index, STATUSES};
+    let t = |k: &'static str| i18n::tr(lang, k).to_string();
+    crate::tray::TrayState {
+        scan: s.scan,
+        status: status_index(&s.status),
+        notify: s.notify,
+        tooltip: t("tray_tip").replace("{o}", &online.to_string()).replace("{c}", &connected.to_string()),
+        l_open: t("tray_open"),
+        l_scan: t("tray_scan"),
+        l_status: t("tray_status"),
+        l_notify: t("tray_notify"),
+        l_quit: t("tray_quit"),
+        l_statuses: STATUSES.iter().map(|(_, k)| t(k)).collect(),
+    }
+}
+
+/// Colour of a status dot.
+fn status_color(id: &str) -> Option<Color32> {
+    Some(match id {
+        "online" => Color32::from_rgb(0x2E, 0xC2, 0x7E),
+        "offline" => Color32::from_rgb(0x8A, 0x8D, 0x93),
+        "work" => Color32::from_rgb(0x35, 0x84, 0xE4),
+        "sleep" => Color32::from_rgb(0x91, 0x41, 0xAC),
+        "busy" => Color32::from_rgb(0xE0, 0x1B, 0x24),
+        "learning" => Color32::from_rgb(0xE5, 0xA5, 0x0A),
+        "relax" => Color32::from_rgb(0x21, 0x90, 0xA4),
+        "play" => Color32::from_rgb(0xE6, 0x61, 0x00),
+        "read" => Color32::from_rgb(0x86, 0x5E, 0x3C),
+        _ => return None,
+    })
+}
+
+impl CyberApp {
+    fn started_hidden(mut self, hidden: bool) -> Self {
+        if hidden {
+            if self.tray.is_some() {
+                self.hidden = true;
+                if let Ok(mut n) = self.notify.lock() {
+                    n.active = false;
+                }
+            } else {
+                // no tray to come back from: show minimized instead
+                self.pending_minimize = true;
+            }
+        }
+        self
+    }
+
+    fn status_label(&self, id: &str) -> &'static str {
+        crate::tray::STATUSES.iter().find(|(s, _)| *s == id).map(|(_, k)| self.t(k)).unwrap_or("")
+    }
+
+    /// Status of another user, from the latest node snapshot.
+    fn status_of(&self, peer: &str) -> String {
+        self.nodes.iter().find(|n| n.peer == peer).map(|n| n.status.clone()).unwrap_or_default()
+    }
+
+    fn set_status(&mut self, id: &str) {
+        self.settings.status = id.to_string();
+        store::save_settings(&self.settings);
+        let _ = self.handle.cmd_tx.send(Cmd::SetStatus(id.to_string()));
+        self.refresh_tray(true);
+    }
+
+    fn refresh_tray(&mut self, force: bool) {
+        let online = self.nodes.iter().filter(|n| n.online && n.name.is_some()).count();
+        let connected = self.nodes.iter().filter(|n| n.connected).count();
+        let sig = format!("{}{}{}{}{online}{connected}{:?}", self.settings.scan, self.settings.status, self.settings.notify, self.lang.code(), self.lang);
+        if force || sig != self.tray_sig {
+            self.tray_sig = sig;
+            if let Some(t) = &self.tray {
+                t.update(&tray_state(&self.settings, self.lang, online, connected));
+            }
+        }
+    }
+
+    fn background_and_tray(&mut self, ctx: &egui::Context) {
+        use crate::tray::{TrayCmd, STATUSES};
+        if self.pending_minimize {
+            self.pending_minimize = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        if let Some(at) = self.demo_close_at {
+            if Instant::now() >= at {
+                self.demo_close_at = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(200));
+            }
+        }
+        // actions from the tray (already applied to network/settings by the router)
+        while let Ok(cmd) = self.tray_rx.try_recv() {
+            match cmd {
+                TrayCmd::Open => self.hidden = false,
+                TrayCmd::SetScan(on) => self.settings.scan = on,
+                TrayCmd::SetStatus(i) => self.settings.status = STATUSES.get(i).map(|s| s.0.to_string()).unwrap_or_default(),
+                TrayCmd::SetNotify(on) => self.settings.notify = on,
+                TrayCmd::Quit => {}
+            }
+            self.refresh_tray(true);
+        }
+        let quitting = self.quitting.load(std::sync::atomic::Ordering::SeqCst);
+        if ctx.input(|i| i.viewport().close_requested()) && !quitting && self.settings.background {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.tray.is_some() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.hidden = true;
+                if !self.bg_hint_shown && self.settings.notify {
+                    self.bg_hint_shown = true;
+                    notify_desktop(self.t("notif_bg_title"), self.t("notif_bg_body"));
+                }
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+        } else if ctx.input(|i| i.viewport().close_requested()) {
+            let _ = self.handle.cmd_tx.send(Cmd::Quit);
+        }
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        if let Ok(mut n) = self.notify.lock() {
+            n.active = !self.hidden && focused && !minimized;
+            n.enabled = self.settings.notify;
+            n.lang = self.lang;
+        }
+        self.refresh_tray(false);
+    }
+
+    /// Settings → Background & tray.
+    fn tab_background(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        ui.colored_label(c.ink2, self.t("bg_note"));
+        ui.add_space(14.0);
+        let l = self.t("bg_close_tray");
+        if ui.checkbox(&mut self.settings.background, l).changed() {
+            store::save_settings(&self.settings);
+        }
+        if self.tray.is_none() {
+            ui.colored_label(Color32::from_rgb(0xE5, 0xA5, 0x0A), RichText::new(self.t("bg_no_tray")).small());
+        }
+        ui.add_space(6.0);
+        let l = self.t("bg_autostart");
+        if ui.checkbox(&mut self.settings.autostart, l).changed() {
+            store::save_settings(&self.settings);
+            if let Err(e) = set_autostart(self.settings.autostart, &self.self_name) {
+                self.toast(e);
+            }
+        }
+        ui.add_space(6.0);
+        let l = self.t("tray_scan");
+        if ui.checkbox(&mut self.settings.scan, l).changed() {
+            store::save_settings(&self.settings);
+            let _ = self.handle.cmd_tx.send(Cmd::SetScan(self.settings.scan));
+            self.refresh_tray(true);
+        }
+        ui.add_space(6.0);
+        let l = self.t("tray_notify");
+        if ui.checkbox(&mut self.settings.notify, l).changed() {
+            store::save_settings(&self.settings);
+            self.refresh_tray(true);
+        }
+        ui.add_space(16.0);
+        ui.label(RichText::new(self.t("set_status").to_uppercase()).color(c.ink2).size(12.0).b());
+        ui.add_space(4.0);
+        self.status_picker(ui, "status_tab");
+    }
+
+    fn status_picker(&mut self, ui: &mut egui::Ui, id: &str) {
+        let cur = self.settings.status.clone();
+        let mut pick: Option<&'static str> = None;
+        egui::ComboBox::from_id_salt(id).selected_text(self.status_label(&cur)).width(260.0).show_ui(ui, |ui| {
+            for (sid, key) in crate::tray::STATUSES {
+                let label = self.t(key);
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    if let Some(col) = status_color(sid) {
+                        ui.painter().circle_filled(r.center(), 5.0, col);
+                    }
+                    if ui.selectable_label(cur == *sid, label).clicked() {
+                        pick = Some(sid);
+                    }
+                });
+            }
+        });
+        if let Some(p) = pick {
+            self.set_status(p);
+        }
+    }
+}
+
+/// Start with the system: XDG autostart entry on Linux, Run key on Windows.
+fn set_autostart(on: bool, name: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    {
+        let dir = std::env::var("XDG_CONFIG_HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config")).join("autostart");
+        let file = dir.join("cybercord.desktop");
+        if on {
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let entry = format!(
+                "[Desktop Entry]\nType=Application\nName=CyberCord\nComment=Serverless peer-to-peer chat (runs in the tray)\nExec=\"{}\" --name \"{}\" --minimized\nIcon=cybercord\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+                exe.display(),
+                name.replace('"', "")
+            );
+            std::fs::write(&file, entry).map_err(|e| e.to_string())
+        } else {
+            let _ = std::fs::remove_file(&file);
+            Ok(())
+        }
+    }
+    #[cfg(windows)]
+    {
+        let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        let status = if on {
+            let cmd = format!("\"{}\" --name \"{}\" --minimized", exe.display(), name.replace('"', ""));
+            std::process::Command::new("reg").args(["add", key, "/v", "CyberCord", "/t", "REG_SZ", "/d", &cmd, "/f"]).status()
+        } else {
+            std::process::Command::new("reg").args(["delete", key, "/v", "CyberCord", "/f"]).status()
+        };
+        status.map_err(|e| e.to_string()).map(|_| ())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (on, name, exe);
+        Err("autostart is not supported on this system".into())
+    }
+}
+
+// ---- torrent-like files: chat card + downloads page ----
+
+fn human_size(b: u64) -> String {
+    let f = b as f64;
+    if f >= 1073741824.0 {
+        format!("{:.2} GB", f / 1073741824.0)
+    } else if f >= 1048576.0 {
+        format!("{:.1} MB", f / 1048576.0)
+    } else if f >= 1024.0 {
+        format!("{:.0} KB", f / 1024.0)
+    } else {
+        format!("{b} B")
+    }
+}
+
+/// Open a file or folder with the system's default app.
+fn open_path(p: &std::path::Path) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(p).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(p).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(p).spawn();
+}
+
+impl CyberApp {
+    fn transfer_status(&self, t: &cybercord_node::transfer::TransferInfo) -> String {
+        let pct = if t.size == 0 { 100 } else { t.have_bytes * 100 / t.size };
+        match t.state {
+            "waiting" => self.t("file_waiting").to_string(),
+            "downloading" => self.t("file_downloading").replace("{p}", &pct.to_string()).replace("{s}", &human_size(t.speed_bps)).replace("{n}", &t.peers.to_string()),
+            "paused" => self.t("file_paused").replace("{p}", &pct.to_string()),
+            "verifying" => self.t("file_verifying").to_string(),
+            "done" => self.t("file_done").to_string(),
+            "seeding" => self.t("file_seeding").to_string(),
+            _ => t.state.to_string(),
+        }
+    }
+
+    /// Buttons for a transfer (shared by the chat card and the downloads page).
+    fn transfer_buttons(&mut self, ui: &mut egui::Ui, t: &cybercord_node::transfer::TransferInfo) {
+        let c = th();
+        match t.state {
+            "downloading" | "waiting" => {
+                if ui.add(egui::Button::new(RichText::new(self.t("file_pause")).color(c.ink)).fill(c.card).rounding(Rounding::same(8.0))).clicked() {
+                    let _ = self.handle.cmd_tx.send(Cmd::PauseDownload { hash: t.hash.clone(), paused: true });
+                }
+            }
+            "paused" => {
+                if ui.add(egui::Button::new(RichText::new(self.t("file_resume")).color(c.on_accent)).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                    let _ = self.handle.cmd_tx.send(Cmd::PauseDownload { hash: t.hash.clone(), paused: false });
+                }
+            }
+            "done" | "seeding" => {
+                if let Some(p) = &t.path {
+                    let path = std::path::PathBuf::from(p);
+                    if ui.add(egui::Button::new(RichText::new(self.t("file_open")).color(c.on_accent)).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                        open_path(&path);
+                    }
+                    if ui.add(egui::Button::new(RichText::new(self.t("file_folder")).color(c.ink)).fill(c.card).rounding(Rounding::same(8.0))).clicked() {
+                        if let Some(dir) = path.parent() {
+                            open_path(dir);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if matches!(t.state, "downloading" | "waiting" | "paused") && ui.add(egui::Button::new(RichText::new(self.t("file_cancel")).color(c.ink2)).frame(false)).clicked() {
+            let _ = self.handle.cmd_tx.send(Cmd::CancelDownload(t.hash.clone()));
+        }
+    }
+
+    fn file_widget(&mut self, ui: &mut egui::Ui, a: &Attachment, ch: &ChannelId) {
+        let c = th();
+        let t = self.transfers.iter().find(|t| t.hash == a.hash).cloned();
+        egui::Frame::none().fill(c.surface).stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(14.0)).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+            ui.set_width(440.0);
+            ui.horizontal(|ui| {
+                // document icon with the extension
+                let (r, _) = ui.allocate_exact_size(egui::vec2(40.0, 48.0), egui::Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(r, Rounding::same(6.0), c.accent.gamma_multiply(0.85));
+                p.add(egui::Shape::convex_polygon(vec![r.right_top() - egui::vec2(12.0, 0.0), r.right_top(), r.right_top() + egui::vec2(0.0, 12.0)], c.surface, Stroke::NONE));
+                let ext: String = a.name.rsplit_once('.').map(|(_, e)| e.to_uppercase()).unwrap_or_default().chars().take(4).collect();
+                p.text(r.center() + egui::vec2(0.0, 6.0), Align2::CENTER_CENTER, ext, egui::FontId::new(10.5, egui::FontFamily::Name("bold".into())), c.on_accent);
+                ui.vertical(|ui| {
+                    ui.add(egui::Label::new(RichText::new(&a.name).color(c.ink).b()).truncate());
+                    let status = match &t {
+                        Some(t) => format!("{} · {}", human_size(a.size), self.transfer_status(t)),
+                        None => human_size(a.size),
+                    };
+                    ui.colored_label(c.ink2, RichText::new(status).small());
+                    if let Some(t) = &t {
+                        if matches!(t.state, "downloading" | "paused" | "waiting" | "verifying") {
+                            let frac = if t.size == 0 { 1.0 } else { t.have_bytes as f32 / t.size as f32 };
+                            ui.add(egui::ProgressBar::new(frac).desired_width(300.0).desired_height(6.0).fill(if t.state == "paused" { c.ink2 } else { c.accent }));
+                        }
+                    }
+                    ui.horizontal(|ui| match &t {
+                        Some(t) => self.transfer_buttons(ui, t),
+                        None => {
+                            let auto = self.autoplay && a.size > 100_000_000;
+                            if auto {
+                                self.autoplay = false;
+                            }
+                            if ui.add(egui::Button::new(RichText::new(format!("⬇  {}", self.t("file_get"))).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).on_hover_text(self.t("file_get_tip")).clicked() || auto {
+                                let _ = self.handle.cmd_tx.send(Cmd::Download { hash: a.hash.clone(), name: a.name.clone(), size: a.size, channel: ch.clone() });
+                            }
+                        }
+                    });
+                });
+            });
+        });
+    }
+
+    fn downloads_view(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        ui.label(RichText::new(self.t("downloads_title")).color(c.ink).b().size(22.0));
+        ui.colored_label(c.ink2, RichText::new(self.t("downloads_note").replace("{dir}", &cybercord_node::transfer::download_dir().display().to_string())).small());
+        ui.add_space(12.0);
+        let list = self.transfers.clone();
+        if list.is_empty() {
+            ui.colored_label(c.ink2, self.t("downloads_empty"));
+            return;
+        }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for t in &list {
+                egui::Frame::none().fill(c.surface).stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(12.0)).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width().min(760.0));
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&t.name).color(c.ink).b());
+                            ui.colored_label(c.ink2, RichText::new(format!("{} / {} · {}", human_size(t.have_bytes), human_size(t.size), self.transfer_status(t))).small());
+                            if t.state != "seeding" && t.state != "done" {
+                                let frac = if t.size == 0 { 1.0 } else { t.have_bytes as f32 / t.size as f32 };
+                                ui.add(egui::ProgressBar::new(frac).desired_width(420.0).desired_height(6.0).fill(if t.state == "paused" { c.ink2 } else { c.accent }));
+                            }
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            self.transfer_buttons(ui, t);
+                        });
+                    });
+                });
+                ui.add_space(8.0);
+            }
+        });
+        ui.ctx().request_repaint_after(Duration::from_millis(500));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod autostart_tests {
+    #[test]
+    fn writes_and_removes_the_xdg_entry() {
+        let dir = std::env::temp_dir().join(format!("cc-auto-{}", std::process::id()));
+        // SAFETY: test-local environment
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        super::set_autostart(true, "Тест").unwrap();
+        let f = dir.join("autostart/cybercord.desktop");
+        let t = std::fs::read_to_string(&f).unwrap();
+        assert!(t.contains("--minimized") && t.contains("--name \"Тест\"") && t.starts_with("[Desktop Entry]"), "{t}");
+        super::set_autostart(false, "Тест").unwrap();
+        assert!(!f.exists());
     }
 }

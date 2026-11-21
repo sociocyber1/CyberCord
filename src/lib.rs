@@ -72,6 +72,8 @@ pub struct CyberBehaviour {
     pub mdns: mdns::tokio::Behaviour,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
+    /// Torrent-like file pieces, node to node (`/cybercord/files/1`).
+    pub files: libp2p::request_response::cbor::Behaviour<transfer::FileReq, transfer::FileResp>,
 }
 
 /// Kademlia protocol name for the CyberCord DHT (separate from the public IPFS DHT).
@@ -148,7 +150,11 @@ pub fn build_swarm(keypair: Keypair) -> anyhow::Result<Swarm<CyberBehaviour>> {
 
             let upnp = libp2p::upnp::tokio::Behaviour::default();
 
-            Ok(CyberBehaviour { relay_client, relay, dcutr, kad, upnp, gossipsub, mdns, identify, ping })
+            let files = libp2p::request_response::cbor::Behaviour::new(
+                [(libp2p::StreamProtocol::new("/cybercord/files/1"), libp2p::request_response::ProtocolSupport::Full)],
+                libp2p::request_response::Config::default().with_request_timeout(Duration::from_secs(30)).with_max_concurrent_streams(128),
+            );
+            Ok(CyberBehaviour { relay_client, relay, dcutr, kad, upnp, gossipsub, mdns, identify, ping, files })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
         .build();
@@ -181,3 +187,4 @@ pub mod store;
 pub mod net;
 pub mod voice;
 pub mod rendezvous;
+pub mod transfer;
