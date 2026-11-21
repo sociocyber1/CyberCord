@@ -1,17 +1,39 @@
-# Builds CyberCord for Linux and Windows and publishes a GitHub release
-# whenever a tag like v0.10.0 is pushed (or when run by hand).
-name: release
+# CI + releases.
+# Every push to main: tests, Linux and Windows builds.
+# If Cargo.toml's version has no GitHub release yet, the workflow creates the
+# tag vX.Y.Z and a release with the Linux and Windows archives.
+name: build-and-release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      v: ${{ steps.v.outputs.v }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          echo "v=$V" >> "$GITHUB_OUTPUT"
+          if gh release view "v$V" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   linux:
+    needs: version
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -26,10 +48,8 @@ jobs:
           cargo build --release --features camera --target-dir target-nosound
       - name: Package
         run: |
-          V="${GITHUB_REF_NAME#v}"
-          [ "$V" = "$GITHUB_REF_NAME" ] && V="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
-          D="cybercord-$V-linux-x86_64"
-          mkdir -p "$D/assets"
+          D="cybercord-${{ needs.version.outputs.v }}-linux-x86_64"
+          mkdir -p "$D"
           cp target/release/cybercord "$D/cybercord"
           cp target-nosound/release/cybercord "$D/cybercord-nosound"
           cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/cybercord.desktop "$D/"
@@ -38,15 +58,13 @@ jobs:
           cp -r docs README.md CHANGELOG.md THIRD_PARTY.md assets/fonts/LICENSE-Inter.txt "$D/"
           tar czf "$D.tar.gz" "$D"
           sha256sum "$D.tar.gz" > "$D.tar.gz.sha256"
-          echo "ASSETS=$D.tar.gz $D.tar.gz.sha256" >> "$GITHUB_ENV"
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            cybercord-*-linux-x86_64.tar.gz
-            cybercord-*-linux-x86_64.tar.gz.sha256
+          name: linux
+          path: cybercord-*-linux-x86_64.tar.gz*
 
   windows:
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,16 +74,36 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $v = "$env:GITHUB_REF_NAME".TrimStart("v")
-          $d = "cybercord-$v-windows-x86_64"
+          $d = "cybercord-${{ needs.version.outputs.v }}-windows-x86_64"
           New-Item -ItemType Directory -Force "$d" | Out-Null
           Copy-Item target/release/cybercord.exe "$d/CyberCord.exe"
           Copy-Item README.md, CHANGELOG.md, THIRD_PARTY.md, assets/fonts/LICENSE-Inter.txt "$d/"
           Compress-Archive -Path "$d" -DestinationPath "$d.zip"
           (Get-FileHash "$d.zip" -Algorithm SHA256).Hash.ToLower() + "  $d.zip" | Out-File -Encoding ascii "$d.zip.sha256"
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            cybercord-*-windows-x86_64.zip
-            cybercord-*-windows-x86_64.zip.sha256
+          name: windows
+          path: cybercord-*-windows-x86_64.zip*
+
+  release:
+    needs: [version, linux, windows]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes from CHANGELOG
+        run: |
+          V="${{ needs.version.outputs.v }}"
+          awk -v v="## $V" '$0==v{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          printf '\n**Linux:** `tar xf cybercord-%s-linux-x86_64.tar.gz && cd cybercord-%s-linux-x86_64 && ./install.sh`\n\n**Windows 10/11:** unzip `cybercord-%s-windows-x86_64.zip` and run `CyberCord.exe`.\n' "$V" "$V" "$V" >> notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.v }}
+          target_commitish: ${{ github.sha }}
+          name: CyberCord ${{ needs.version.outputs.v }}
+          body_path: notes.md
+          files: dist/*
