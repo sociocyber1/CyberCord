@@ -41,7 +41,7 @@ async fn voice_frame_crosses_the_network() {
 
     // A 20 ms mono frame (a ramp, so we can check the bytes survived intact).
     let pcm: Vec<i16> = (0..960).map(|i| (i as i16).wrapping_mul(17)).collect();
-    let frame = VoiceFrame { room: room.clone(), name: "alice".into(), seq: 7, pcm: pcm.clone() };
+    let frame = VoiceFrame { room: room.clone(), name: "alice".into(), seq: 7, pcm: pcm.clone(), bot: false };
 
     let got = tokio::time::timeout(Duration::from_secs(30), async {
         let mut tick = tokio::time::interval(Duration::from_millis(200));
