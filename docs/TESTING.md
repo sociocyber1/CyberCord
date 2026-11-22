@@ -38,6 +38,12 @@ CYBERCORD_DATA_DIR=/tmp/bot CYBERCORD_ALLOW_LOOPBACK=1 \
 считает себя старой версией (проверка автообновления).
 `CYBERCORD_PAPERS_SAMPLE=файл.json` — сохранённый ответ OpenAlex вместо сети.
 
+## Звонки и звуки
+
+В консольной ноде: `/call Имя`, `/answer`, `/decline`, `/hangup`.
+`cybercord --export-sounds /tmp/sfx` — все звуки интерфейса в WAV;
+`cybercord --name Алиса --export-card card.png` — карточка-приглашение.
+
 ## Несколько нод на одном компьютере
 
 ```bash

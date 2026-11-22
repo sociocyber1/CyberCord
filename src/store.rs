@@ -331,11 +331,32 @@ pub struct Settings {
     /// Look for a new CyberCord release at start (GitHub; asks before installing).
     #[serde(default = "yes")]
     pub update_check: bool,
+    /// Interface sounds (soft, synthesised): master switch, volume, groups.
+    #[serde(default = "yes")]
+    pub snd_on: bool,
+    #[serde(default = "half")]
+    pub snd_vol: f32,
+    #[serde(default = "yes")]
+    pub snd_msg: bool,
+    #[serde(default = "yes")]
+    pub snd_mention: bool,
+    #[serde(default = "yes")]
+    pub snd_voice: bool,
+    #[serde(default = "yes")]
+    pub snd_call: bool,
+    #[serde(default = "yes")]
+    pub snd_start: bool,
+    #[serde(default)]
+    pub snd_sent: bool,
 }
 
 fn hundred() -> f32 {
     100.0
 }
+fn half() -> f32 {
+    0.5
+}
+
 fn yes() -> bool {
     true
 }

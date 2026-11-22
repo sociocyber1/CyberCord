@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.19</h1>
+<h1 align="center">CyberCord 0.20</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -96,6 +96,41 @@ CyberCord похож на Discord, но у него нет центрально�
 - [Концепция (PDF)](docs/concept/cybercord-concept.pdf) — исходный документ
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
+
+## Расскажите о CyberCord
+
+CyberCord растёт только от человека к человеку — без рекламы и без компании.
+В приложении: **Друзья → «Пригласить друга»** — готовый текст приглашения,
+QR-код со ссылкой на скачивание и **карточка-картинка 1200×630** (такой
+размер мессенджеры и соцсети показывают как превью) с вашим именем.
+
+![Карточка-приглашение](docs/img/invite-card.png)
+
+## Что нового в 0.20
+
+- **Звонки другу.** Кнопка «Позвонить» в личке: у друга появляется окно
+  **«Входящий звонок»** с мелодией и кнопками «Принять» / «Отклонить»,
+  даже если CyberCord свёрнут в трей (окно поднимается, приходит
+  уведомление). Во время звонка — полоса сверху с таймером, микрофоном и
+  «Завершить». Понятные исходы: «отклонён», «в другом звонке», «не
+  отвечает» (45 с), «пропущенный звонок», «завершён · 3:12». Если двое
+  звонят друг другу одновременно — просто соединяются. Сигналы идут по
+  личной теме друзей (`Wire::Call`), звук — по голосовой комнате лички,
+  без серверов.
+- **Звуки интерфейса — мягкие и спокойные.** Синтезируются в самой
+  программе (без звуковых файлов и чужих лицензий): синус с плавной атакой,
+  долгим затуханием и лёгким эхом комнаты, только ноты пентатоники —
+  поэтому любые два звука звучат согласно. Новое сообщение, личное
+  сообщение или упоминание, вход и выход в голосовом, кто-то вошёл или
+  вышел, мелодия звонка, «соединено», «завершён» и **звуковой логотип
+  CyberCord при запуске**. Настройки → Голос и звук: громкость, группы
+  звуков и кнопки «▶» прослушать каждый.
+- **«Пригласить друга»** (Друзья, Главная, О программе): текст, QR-код,
+  карточка PNG — см. выше.
+
+![Входящий звонок](docs/img/screen-call.png)
+
+![Пригласить друзей](docs/img/screen-invite.png)
 
 ## Что нового в 0.19
 
@@ -524,12 +559,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.19.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.20.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.19.0-linux-x86_64.tar.gz
-cd cybercord-0.19.0-linux-x86_64
+tar xf cybercord-0.20.0-linux-x86_64.tar.gz
+cd cybercord-0.20.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -735,6 +770,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.20:** calls between friends with an incoming-call window, ringtone, accept/decline, busy/missed/no-answer states (signals over the DM topic, sound over the DM voice room); soft synthesised interface sounds (pentatonic, no sound files) with a sound logo, volume and per-group switches; "Invite a friend": ready text, QR code and a 1200×630 PNG card.
 
 **0.19:** auto-update from GitHub releases with a SHA-256 check and a data backup before installing; scientific article search (OpenAlex + arXiv) with a built-in PDF reader and sharing to chats; developer mode for testing voice on one computer (echo, tone and music bots, a second window, live counters); the city map is now "The First City".
 

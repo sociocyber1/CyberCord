@@ -349,6 +349,33 @@ pub enum Wire {
         #[serde(default)]
         nonce: u64,
     },
+    /// A call between two friends (DM topic): ring, answer, hang up.
+    /// `id` names the call; `round` keeps repeated rings from being dropped
+    /// as duplicates by gossip.
+    Call {
+        id: u64,
+        kind: CallKind,
+        name: String,
+        #[serde(default)]
+        round: u32,
+    },
+}
+
+/// Call signals. The sound itself goes over the DM voice room
+/// (`cc/voice/cc/dm/<a>/<b>`), as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CallKind {
+    /// "I am calling you" (repeated every few seconds until answered).
+    Ring,
+    Accept,
+    Decline,
+    /// The caller gave up before an answer.
+    Cancel,
+    /// Hung up during the call.
+    End,
+    /// Already in another call.
+    Busy,
 }
 
 impl ChannelId {

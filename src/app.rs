@@ -15,7 +15,7 @@ use cybercord_node::servers::SERVERS;
 use cybercord_node::store::{self, Settings};
 use cybercord_node::profile::{self as prof, Profile, Skill};
 use cybercord_node::semantics::{self as sem, Kind, Level};
-use cybercord_node::types::{clock, now_ms, short_date, subscript, parse_connect_code, Attachment, ChannelId, ChatEvent, Friend, MediaKind};
+use cybercord_node::types::{CallKind, clock, now_ms, short_date, subscript, parse_connect_code, Attachment, ChannelId, ChatEvent, Friend, MediaKind};
 use cybercord_node::voice;
 
 use crate::camera;
@@ -214,6 +214,16 @@ pub struct CyberApp {
     show_city: bool,
     /// Developer mode window; voice counters from the node
     show_dev: bool,
+    started_ms: u64,
+    brand_played: bool,
+    /// interface sounds that are playing, and when each last played
+    sfx: Vec<crate::music::Player>,
+    sfx_last: HashMap<crate::sounds::Sfx, Instant>,
+    /// calls between friends
+    call: CallState,
+    call_tone_at: Option<Instant>,
+    show_invite: bool,
+    invite_qr: Option<egui::TextureHandle>,
     /// Scientific article search
     show_papers: bool,
     papers: crate::papers::Search,
@@ -383,6 +393,14 @@ impl CyberApp {
             show_map: false,
             show_city: false,
             show_dev: false,
+            started_ms: now_ms(),
+            brand_played: false,
+            sfx: Vec::new(),
+            sfx_last: HashMap::new(),
+            call: CallState::Idle,
+            call_tone_at: None,
+            show_invite: false,
+            invite_qr: None,
             show_papers: false,
             papers: crate::papers::Search::default(),
             papers_q: String::new(),
@@ -491,6 +509,7 @@ impl CyberApp {
                         self.settings.dev = true;
                         self.show_dev = true;
                     }
+                    "invite" => self.show_invite = true,
                     "proftab" => {
                         self.show_settings = true;
                         self.set_tab = SetTab::Profile;
@@ -634,6 +653,14 @@ impl CyberApp {
                 }
                 UiEvent::Status(s) => self.status = s,
                 UiEvent::Chat(ev) => {
+                    if ev.ts_ms + 15_000 > now_ms() && ev.ts_ms + 3_000 > self.started_ms && ev.from != self.self_id && ev.name != self.self_name && ev.edits.is_none() && !ev.deleted {
+                        let mention = self.self_name.chars().count() >= 2 && ev.body.to_lowercase().contains(&self.self_name.to_lowercase());
+                        if ev.channel.is_dm() || mention {
+                            self.play_sfx(crate::sounds::Sfx::Mention);
+                        } else if ev.channel != self.active_channel() || !self.chat_visible() || self.hidden {
+                            self.play_sfx(crate::sounds::Sfx::Message);
+                        }
+                    }
                     if self.settings.hack_fx && ev.ts_ms + 10_000 > now_ms() && !ev.deleted {
                         self.anims.insert(ev.edits.clone().unwrap_or_else(|| ev.id.clone()), Instant::now());
                     }
@@ -656,6 +683,27 @@ impl CyberApp {
                     self.standby = standby;
                 }
                 UiEvent::VoiceJoined { room } => {
+                    let was = self.in_voice.clone();
+                    if room.is_some() && was != room && !matches!(self.call, CallState::Outgoing { .. } | CallState::Active { .. }) {
+                        self.play_sfx(crate::sounds::Sfx::VoiceJoin);
+                    }
+                    if room.is_none() && was.is_some() {
+                        // left the room: a call in it is over
+                        match std::mem::replace(&mut self.call, CallState::Idle) {
+                            CallState::Outgoing { peer, id, .. } => {
+                                let _ = self.handle.cmd_tx.send(Cmd::Call { peer, id, kind: CallKind::Cancel, round: 0 });
+                                self.play_sfx(crate::sounds::Sfx::CallEnd);
+                            }
+                            CallState::Active { peer, id, .. } => {
+                                let _ = self.handle.cmd_tx.send(Cmd::Call { peer, id, kind: CallKind::End, round: 0 });
+                                self.play_sfx(crate::sounds::Sfx::CallEnd);
+                            }
+                            other => {
+                                self.call = other;
+                                self.play_sfx(crate::sounds::Sfx::VoiceLeave);
+                            }
+                        }
+                    }
                     self.in_voice = room;
                     if self.in_voice.is_none() {
                         self.mic_on = false;
@@ -669,11 +717,22 @@ impl CyberApp {
                     }
                 }
                 UiEvent::VoiceRoster { peer, name, room } => {
+                    if peer != self.self_id {
+                        let before = self.roster.get(&peer).and_then(|r| r.1.clone());
+                        if let Some(mine) = self.in_voice.clone() {
+                            if room.as_deref() == Some(mine.as_str()) && before.as_deref() != Some(mine.as_str()) {
+                                self.play_sfx(crate::sounds::Sfx::PeerJoin);
+                            } else if before.as_deref() == Some(mine.as_str()) && room.as_deref() != Some(mine.as_str()) {
+                                self.play_sfx(crate::sounds::Sfx::PeerLeave);
+                            }
+                        }
+                    }
                     self.roster.insert(peer, (name, room, now_ms()));
                 }
                 UiEvent::Talking { name } => {
                     self.talkers.insert(name, now_ms());
                 }
+                UiEvent::Call { peer, name, id, kind } => self.on_call(peer, name, id, kind),
                 UiEvent::VoiceStats { sent, recv, buffer_ms } => {
                     self.voice_stats = Some((sent, recv, buffer_ms));
                 }
@@ -723,6 +782,7 @@ impl CyberApp {
         self.input.clear();
         self.words_check(&body);
         let ch = self.active_channel();
+        self.play_sfx(crate::sounds::Sfx::Sent);
         if ch.is_dm() {
             let _ = self.handle.cmd_tx.send(Cmd::SendDm { peer_id: ch.channel, body });
         } else {
@@ -1261,6 +1321,10 @@ impl eframe::App for CyberApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.drain_papers();
+        if !self.brand_played && !self.hidden && self.started.elapsed().as_millis() > 300 {
+            self.brand_played = true;
+            self.play_sfx(crate::sounds::Sfx::Brand);
+        }
         if !self.update_checked && self.settings.update_check && self.started.elapsed().as_secs() >= 10 {
             self.update_checked = true;
             self.updater.check(ctx.clone(), true);
@@ -1368,6 +1432,9 @@ impl eframe::App for CyberApp {
         self.block_editor(ctx);
         self.profile_window(ctx);
         self.city_welcome_window(ctx);
+        self.call_tick(ctx);
+        self.call_window(ctx);
+        self.invite_window(ctx);
         self.dev_window(ctx);
         self.pdf_overlay(ctx);
         self.draw_toast(ctx);
@@ -1784,6 +1851,8 @@ impl CyberApp {
                 self.people_search(ui, false);
             });
             ui.add_space(10.0);
+            self.invite_card(ui);
+            ui.add_space(10.0);
 
             let code = self.connect_code();
             let r = card(ui, self.t("your_code"), |ui| {
@@ -1911,6 +1980,8 @@ impl CyberApp {
             ui.add_space(14.0);
             self.guide_card(ui);
             ui.add_space(10.0);
+            self.invite_card(ui);
+            ui.add_space(10.0);
             self.network_card(ui, true);
             ui.add_space(10.0);
             card(ui, self.t("good_to_know"), |ui| {
@@ -2000,7 +2071,7 @@ impl CyberApp {
                             .fill(th().green)
                             .rounding(Rounding::same(8.0));
                         if ui.add(btn).on_hover_text(self.t("call").replace("{name}", &self.friend_name(&ch.channel))).clicked() {
-                            let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ch.clone() });
+                            self.start_call(&ch.channel);
                         }
                     }
                 });
@@ -2899,6 +2970,414 @@ impl CyberApp {
                 ui.add_space(8.0);
             }
         });
+    }
+
+    /// Play an interface sound, if that group is on (and not the same sound
+    /// a moment ago).
+    fn play_sfx(&mut self, s: crate::sounds::Sfx) {
+        use crate::sounds::Sfx::*;
+        let st = &self.settings;
+        let on = st.snd_on
+            && match s {
+                Brand => st.snd_start,
+                Message => st.snd_msg,
+                Mention => st.snd_mention,
+                Sent => st.snd_sent,
+                VoiceJoin | VoiceLeave | PeerJoin | PeerLeave => st.snd_voice,
+                Ring | Ringback | CallStart | CallEnd => st.snd_call,
+            };
+        if !on {
+            return;
+        }
+        if self.sfx_last.get(&s).map(|t| t.elapsed().as_millis() < 700).unwrap_or(false) {
+            return;
+        }
+        self.sfx_last.insert(s, Instant::now());
+        self.play_sfx_now(s);
+    }
+
+    fn play_sfx_now(&mut self, s: crate::sounds::Sfx) {
+        self.sfx.retain(|p| !p.state.finished());
+        if self.sfx.len() < 6 {
+            if let Some(p) = crate::music::play(crate::sounds::track_at(s, self.settings.snd_vol)) {
+                self.sfx.push(p);
+            }
+        }
+    }
+
+    // ---- inviting friends ----
+
+    fn invite_card(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        egui::Frame::none().fill(c.green.gamma_multiply(0.12)).stroke(Stroke::new(1.0, c.green.gamma_multiply(0.5))).rounding(Rounding::same(12.0)).inner_margin(egui::Margin::same(14.0)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width((ui.available_width() - 190.0).max(200.0));
+                    ui.label(RichText::new(self.t("invite_h")).color(c.ink).b().size(16.0));
+                    ui.add(egui::Label::new(RichText::new(self.t("invite_sub")).color(c.ink2)).wrap());
+                });
+                if ui.add(egui::Button::new(RichText::new(self.t("invite_btn")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(10.0)).min_size(egui::vec2(170.0, 38.0))).clicked() {
+                    self.show_invite = true;
+                }
+            });
+        });
+    }
+
+    fn invite_window(&mut self, ctx: &egui::Context) {
+        if !self.show_invite {
+            return;
+        }
+        let c = th();
+        let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+        let text = crate::invite::text(ru, &self.self_name);
+        if self.invite_qr.is_none() {
+            if let Some(img) = crate::invite::qr_image(crate::invite::DOWNLOAD, 6) {
+                let ci = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+                self.invite_qr = Some(ctx.load_texture("invite_qr", ci, egui::TextureOptions::NEAREST));
+            }
+        }
+        let mut open = true;
+        egui::Window::new(self.t("invite_h")).open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(ctx, |ui| {
+            ui.set_width(640.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(400.0);
+                    ui.add(egui::Label::new(RichText::new(self.t("invite_how")).color(c.ink2)).wrap());
+                    ui.add_space(6.0);
+                    let mut shown = text.clone();
+                    ui.add(egui::TextEdit::multiline(&mut shown).desired_rows(9).desired_width(f32::INFINITY));
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add(egui::Button::new(RichText::new(self.t("invite_copy")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                            ui.output_mut(|o| o.copied_text = text.clone());
+                            let m = self.t("invite_copied").to_string();
+                            self.toast(m);
+                        }
+                        if ui.button(self.t("invite_copy_link")).clicked() {
+                            ui.output_mut(|o| o.copied_text = crate::invite::DOWNLOAD.to_string());
+                            let m = self.t("invite_copied").to_string();
+                            self.toast(m);
+                        }
+                        if ui.button(self.t("invite_card")).on_hover_text(self.t("invite_card_tip")).clicked() {
+                            self.save_invite_card();
+                        }
+                    });
+                });
+                ui.vertical_centered(|ui| {
+                    if let Some(t) = &self.invite_qr {
+                        ui.add(egui::Image::new(SizedTexture::new(t.id(), egui::vec2(200.0, 200.0))));
+                    }
+                    ui.label(RichText::new(self.t("invite_scan")).color(c.ink2).small());
+                });
+            });
+        });
+        if !open {
+            self.show_invite = false;
+        }
+    }
+
+    fn save_invite_card(&mut self) {
+        let img = crate::invite::card(&self.self_name, self.t("invite_tagline"), self.t("motto_sce"), self.t("invite_find_me"), self.t("invite_scan_short"));
+        let dir = cybercord_node::transfer::download_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("cybercord-invite.png");
+        match img.save(&path) {
+            Ok(()) => {
+                let m = self.t("papers_saved").replace("{p}", &path.display().to_string());
+                self.toast(m);
+                open_path(&path);
+            }
+            Err(e) => self.toast(format!("{}: {e}", path.display())),
+        }
+    }
+
+    // ---- calls ----
+
+    fn start_call(&mut self, peer: &str) {
+        if !matches!(self.call, CallState::Idle) {
+            let m = self.t("call_busy_me").to_string();
+            self.toast(m);
+            return;
+        }
+        let id: u64 = rand::random();
+        let _ = self.handle.cmd_tx.send(Cmd::Call { peer: peer.to_string(), id, kind: CallKind::Ring, round: 0 });
+        let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::dm(peer) });
+        self.call = CallState::Outgoing { peer: peer.to_string(), id, since: Instant::now(), last_ring: Instant::now(), round: 0 };
+        self.call_tone_at = None;
+    }
+
+    fn accept_call(&mut self) {
+        if let CallState::Incoming { peer, id, .. } = self.call.clone() {
+            let _ = self.handle.cmd_tx.send(Cmd::Call { peer: peer.clone(), id, kind: CallKind::Accept, round: 0 });
+            let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::dm(&peer) });
+            self.begin_active(peer, id);
+            self.dm_open = Some(self.call_peer().unwrap_or_default());
+            self.show_friends = true;
+            self.show_home = false;
+            self.show_map = false;
+            self.show_city = false;
+            self.show_papers = false;
+            self.show_subs = false;
+        }
+    }
+
+    fn begin_active(&mut self, peer: String, id: u64) {
+        self.call = CallState::Active { peer, id, since: Instant::now() };
+        self.mic_on = true;
+        let _ = self.handle.cmd_tx.send(Cmd::SetMic(true));
+        self.play_sfx(crate::sounds::Sfx::CallStart);
+    }
+
+    fn decline_call(&mut self) {
+        if let CallState::Incoming { peer, id, .. } = self.call.clone() {
+            let _ = self.handle.cmd_tx.send(Cmd::Call { peer, id, kind: CallKind::Decline, round: 0 });
+            self.call = CallState::Idle;
+        }
+    }
+
+    fn hang_up(&mut self) {
+        match std::mem::replace(&mut self.call, CallState::Idle) {
+            CallState::Outgoing { peer, id, .. } => {
+                let _ = self.handle.cmd_tx.send(Cmd::Call { peer, id, kind: CallKind::Cancel, round: 0 });
+            }
+            CallState::Active { peer, id, .. } => {
+                let _ = self.handle.cmd_tx.send(Cmd::Call { peer, id, kind: CallKind::End, round: 0 });
+            }
+            CallState::Incoming { .. } | CallState::Idle => return,
+        }
+        let _ = self.handle.cmd_tx.send(Cmd::LeaveVoice);
+        self.play_sfx(crate::sounds::Sfx::CallEnd);
+    }
+
+    fn call_peer(&self) -> Option<String> {
+        match &self.call {
+            CallState::Outgoing { peer, .. } | CallState::Incoming { peer, .. } | CallState::Active { peer, .. } => Some(peer.clone()),
+            CallState::Idle => None,
+        }
+    }
+
+    fn on_call(&mut self, peer: String, name: String, id: u64, kind: CallKind) {
+        let who = if self.friends.contains_key(&peer) { self.friend_name(&peer) } else { name.clone() };
+        match (kind, self.call.clone()) {
+            (CallKind::Ring, CallState::Idle) => {
+                self.call = CallState::Incoming { peer, name: who, id, since: Instant::now(), last: Instant::now() };
+                self.call_tone_at = None;
+                self.hidden = false;
+            }
+            (CallKind::Ring, CallState::Incoming { peer: p, id: i, name: n, since, .. }) if p == peer && i == id => {
+                self.call = CallState::Incoming { peer: p, name: n, id: i, since, last: Instant::now() };
+            }
+            // both called each other at the same moment: that is an answer
+            (CallKind::Ring, CallState::Outgoing { peer: p, id: mine, .. }) if p == peer => {
+                let _ = self.handle.cmd_tx.send(Cmd::Call { peer: peer.clone(), id: mine, kind: CallKind::Accept, round: 0 });
+                self.begin_active(peer, mine);
+            }
+            (CallKind::Ring, CallState::Active { peer: p, .. }) if p == peer => {}
+            (CallKind::Ring, _) => {
+                let _ = self.handle.cmd_tx.send(Cmd::Call { peer, id, kind: CallKind::Busy, round: 0 });
+            }
+            (CallKind::Accept, CallState::Outgoing { peer: p, id: i, .. }) if p == peer && i == id => self.begin_active(peer, id),
+            (CallKind::Decline | CallKind::Busy, CallState::Outgoing { peer: p, id: i, .. }) if p == peer && i == id => {
+                self.call = CallState::Idle;
+                let _ = self.handle.cmd_tx.send(Cmd::LeaveVoice);
+                self.play_sfx(crate::sounds::Sfx::CallEnd);
+                let key = if kind == CallKind::Busy { "call_busy" } else { "call_declined" };
+                let m = self.t(key).replace("{name}", &who);
+                self.toast(m);
+            }
+            (CallKind::Cancel, CallState::Incoming { peer: p, id: i, .. }) if p == peer && i == id => {
+                self.call = CallState::Idle;
+                let m = self.t("call_missed").replace("{name}", &who);
+                self.toast(m);
+            }
+            (CallKind::End | CallKind::Cancel, CallState::Active { peer: p, id: i, since }) if p == peer && i == id => {
+                self.call = CallState::Idle;
+                let _ = self.handle.cmd_tx.send(Cmd::LeaveVoice);
+                self.play_sfx(crate::sounds::Sfx::CallEnd);
+                let m = self.t("call_ended").replace("{name}", &who).replace("{t}", &mmss(since.elapsed().as_secs()));
+                self.toast(m);
+            }
+            _ => {}
+        }
+    }
+
+    /// Ring again, time out, play the ringing tones.
+    fn call_tick(&mut self, ctx: &egui::Context) {
+        use crate::sounds::{seconds, Sfx};
+        match self.call.clone() {
+            CallState::Idle => return,
+            CallState::Outgoing { peer, id, since, last_ring, round } => {
+                if since.elapsed().as_secs() >= 45 {
+                    let who = self.friend_name(&peer);
+                    self.hang_up();
+                    let m = self.t("call_no_answer").replace("{name}", &who);
+                    self.toast(m);
+                    return;
+                }
+                if last_ring.elapsed().as_secs_f32() >= 3.0 {
+                    let _ = self.handle.cmd_tx.send(Cmd::Call { peer: peer.clone(), id, kind: CallKind::Ring, round: round + 1 });
+                    self.call = CallState::Outgoing { peer, id, since, last_ring: Instant::now(), round: round + 1 };
+                }
+                if self.call_tone_at.map(|t| t.elapsed().as_secs_f32() >= seconds(Sfx::Ringback)).unwrap_or(true) {
+                    self.call_tone_at = Some(Instant::now());
+                    self.play_sfx(Sfx::Ringback);
+                }
+            }
+            CallState::Incoming { last, peer, .. } => {
+                // the caller stopped ringing (gone, or the cancel was lost)
+                if last.elapsed().as_secs() >= 12 {
+                    let who = self.friend_name(&peer);
+                    self.call = CallState::Idle;
+                    let m = self.t("call_missed").replace("{name}", &who);
+                    self.toast(m);
+                    return;
+                }
+                if self.call_tone_at.map(|t| t.elapsed().as_secs_f32() >= seconds(Sfx::Ring)).unwrap_or(true) {
+                    self.call_tone_at = Some(Instant::now());
+                    self.play_sfx(Sfx::Ring);
+                }
+            }
+            CallState::Active { .. } => {}
+        }
+        ctx.request_repaint_after(Duration::from_millis(200));
+    }
+
+    /// Incoming call (centre) or the call bar (top) while calling / talking.
+    fn call_window(&mut self, ctx: &egui::Context) {
+        let c = th();
+        match self.call.clone() {
+            CallState::Idle => {}
+            CallState::Incoming { name, since, .. } => {
+                let mut act = 0;
+                egui::Area::new(egui::Id::new("call_in")).order(Order::Foreground).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, -40.0)).show(ctx, |ui| {
+                    egui::Frame::none().fill(c.surface).stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(18.0)).inner_margin(egui::Margin::same(24.0)).shadow(egui::epaint::Shadow { offset: egui::vec2(0.0, 8.0), blur: 32.0, spread: 0.0, color: Color32::from_black_alpha(90) }).show(ui, |ui| {
+                        ui.set_width(320.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(RichText::new(self.t("call_incoming")).color(c.ink2));
+                            ui.add_space(10.0);
+                            // calm pulsing rings around the avatar
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(140.0, 140.0), egui::Sense::hover());
+                            let t = since.elapsed().as_secs_f32();
+                            let p = ui.painter();
+                            for k in 0..3 {
+                                let ph = ((t * 0.6 + k as f32 / 3.0) % 1.0) as f32;
+                                p.circle_stroke(rect.center(), 34.0 + ph * 34.0, Stroke::new(2.0, c.green.gamma_multiply(1.0 - ph)));
+                            }
+                            let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                            p.circle_filled(rect.center(), 34.0, c.accent);
+                            p.text(rect.center(), Align2::CENTER_CENTER, initial, egui::FontId::new(30.0, egui::FontFamily::Name("bold".into())), c.on_accent);
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(&name).color(c.ink).b().size(20.0));
+                            ui.add_space(14.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                if ui.add(egui::Button::new(RichText::new(self.t("call_decline")).color(Color32::WHITE).b()).fill(c.red).rounding(Rounding::same(22.0)).min_size(egui::vec2(120.0, 44.0))).clicked() {
+                                    act = 2;
+                                }
+                                ui.add_space(12.0);
+                                if ui.add(egui::Button::new(RichText::new(self.t("call_accept")).color(Color32::WHITE).b()).fill(c.green).rounding(Rounding::same(22.0)).min_size(egui::vec2(120.0, 44.0))).clicked() {
+                                    act = 1;
+                                }
+                            });
+                        });
+                    });
+                });
+                if act == 1 {
+                    self.accept_call();
+                } else if act == 2 {
+                    self.decline_call();
+                }
+                ctx.request_repaint();
+            }
+            CallState::Outgoing { peer, since, .. } | CallState::Active { peer, since, .. } => {
+                let active = matches!(self.call, CallState::Active { .. });
+                let who = self.friend_name(&peer);
+                let mut hang = false;
+                let mut toggle_mic = false;
+                egui::Area::new(egui::Id::new("call_bar")).order(Order::Foreground).anchor(Align2::CENTER_TOP, egui::vec2(0.0, 62.0)).show(ctx, |ui| {
+                    egui::Frame::none().fill(if active { c.green } else { c.accent }).rounding(Rounding::same(22.0)).inner_margin(egui::Margin::symmetric(16.0, 8.0)).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let text = if active {
+                                self.t("call_with").replace("{name}", &who).replace("{t}", &mmss(since.elapsed().as_secs()))
+                            } else {
+                                let dots = ".".repeat(1 + (since.elapsed().as_millis() / 500 % 3) as usize);
+                                format!("{}{dots}", self.t("call_calling").replace("{name}", &who))
+                            };
+                            ui.label(RichText::new(text).color(Color32::WHITE).b());
+                            ui.add_space(10.0);
+                            if active {
+                                let label = if self.mic_on { self.t("mic_on") } else { self.t("mic_off") };
+                                if ui.add(egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(Color32::from_black_alpha(50)).rounding(Rounding::same(14.0))).clicked() {
+                                    toggle_mic = true;
+                                }
+                            }
+                            if ui.add(egui::Button::new(RichText::new(if active { self.t("call_hangup") } else { self.t("call_cancel") }).color(Color32::WHITE).b()).fill(c.red).rounding(Rounding::same(14.0))).clicked() {
+                                hang = true;
+                            }
+                        });
+                    });
+                });
+                if toggle_mic {
+                    self.mic_on = !self.mic_on;
+                    let _ = self.handle.cmd_tx.send(Cmd::SetMic(self.mic_on));
+                }
+                if hang {
+                    self.hang_up();
+                }
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
+        }
+    }
+
+    /// Settings → Voice and sound: interface sounds.
+    fn sounds_section(&mut self, ui: &mut egui::Ui) {
+        use crate::sounds::Sfx;
+        let c = th();
+        ui.label(RichText::new(self.t("sfx_h").to_uppercase()).color(c.ink2).size(12.0).b());
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            let (l_on, l_vol) = (self.t("sfx_on").to_string(), self.t("sfx_vol").to_string());
+            changed |= ui.checkbox(&mut self.settings.snd_on, l_on).changed();
+            ui.add_space(12.0);
+            ui.label(RichText::new(l_vol).color(c.ink2));
+            changed |= ui.add_enabled(self.settings.snd_on, egui::Slider::new(&mut self.settings.snd_vol, 0.05..=1.0).show_value(false)).changed();
+        });
+        let groups: [(&str, &[Sfx]); 6] = [
+            ("sfx_g_msg", &[Sfx::Message]),
+            ("sfx_g_mention", &[Sfx::Mention]),
+            ("sfx_g_voice", &[Sfx::VoiceJoin, Sfx::VoiceLeave, Sfx::PeerJoin, Sfx::PeerLeave]),
+            ("sfx_g_call", &[Sfx::Ring, Sfx::Ringback, Sfx::CallStart, Sfx::CallEnd]),
+            ("sfx_g_start", &[Sfx::Brand]),
+            ("sfx_g_sent", &[Sfx::Sent]),
+        ];
+        ui.add_enabled_ui(self.settings.snd_on, |ui| {
+            egui::Grid::new("sfx_grid").num_columns(2).spacing(egui::vec2(16.0, 6.0)).show(ui, |ui| {
+                for (key, list) in groups {
+                    let flag = match key {
+                        "sfx_g_msg" => &mut self.settings.snd_msg,
+                        "sfx_g_mention" => &mut self.settings.snd_mention,
+                        "sfx_g_voice" => &mut self.settings.snd_voice,
+                        "sfx_g_call" => &mut self.settings.snd_call,
+                        "sfx_g_start" => &mut self.settings.snd_start,
+                        _ => &mut self.settings.snd_sent,
+                    };
+                    let label = crate::i18n::tr_dyn(self.lang, key).to_string();
+                    changed |= ui.checkbox(flag, label).changed();
+                    ui.horizontal(|ui| {
+                        for s in list.iter() {
+                            if ui.small_button(format!("▶ {}", crate::i18n::tr_dyn(self.lang, s.key()))).clicked() {
+                                self.play_sfx_now(*s);
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        });
+        if changed {
+            store::save_settings(&self.settings);
+        }
     }
 
     /// Settings → About: check, download, install, restart.
@@ -5223,6 +5702,11 @@ impl CyberApp {
                 }
             }
         });
+        ui.add_space(10.0);
+        if ui.add(egui::Button::new(RichText::new(self.t("invite_btn")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0)).min_size(egui::vec2(0.0, 34.0))).clicked() {
+            self.show_invite = true;
+            self.show_settings = false;
+        }
         ui.add_space(14.0);
         self.update_section(ui);
         ui.add_space(14.0);
@@ -5257,6 +5741,8 @@ impl CyberApp {
         if self.dev_lists.is_none() {
             self.dev_lists = Some((voice::list_outputs(), voice::list_inputs()));
         }
+        self.sounds_section(ui);
+        ui.add_space(14.0);
         let (outs, ins) = self.dev_lists.clone().unwrap_or_default();
         let default = self.t("dev_default").to_string();
         let shown = |v: &str| if v.is_empty() { default.clone() } else { v.to_string() };
@@ -5886,6 +6372,19 @@ impl CyberApp {
     }
 }
 
+/// A call between two friends (signals over the DM topic, sound over the DM voice room).
+#[derive(Clone)]
+enum CallState {
+    Idle,
+    Outgoing { peer: String, id: u64, since: Instant, last_ring: Instant, round: u32 },
+    Incoming { peer: String, name: String, id: u64, since: Instant, last: Instant },
+    Active { peer: String, id: u64, since: Instant },
+}
+
+fn mmss(secs: u64) -> String {
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
 // ---- background (tray) + desktop notifications ----
 
 pub struct NotifyState {
@@ -5904,7 +6403,15 @@ fn spawn_event_pump(rx: std::sync::mpsc::Receiver<UiEvent>, tx: std::sync::mpsc:
         .spawn(move || {
             let started = now_ms();
             let mut seen: HashSet<String> = HashSet::new();
+            let mut rung: HashSet<u64> = HashSet::new();
             while let Ok(ev) = rx.recv() {
+                if let UiEvent::Call { name, id, kind: CallKind::Ring, .. } = &ev {
+                    if rung.insert(*id) {
+                        let lang = st.lock().map(|s| s.lang).unwrap_or(Lang::En);
+                        notify_desktop(i18n::tr_dyn(lang, "call_incoming"), name);
+                        crate::tray::bring_to_front(&ctx);
+                    }
+                }
                 if let UiEvent::Chat(m) = &ev {
                     let (enabled, me, active, lang) = st.lock().map(|s| (s.enabled, s.my_name.clone(), s.active, s.lang)).unwrap_or((false, String::new(), true, Lang::En));
                     // only fresh messages (not history arriving by sync), once each
@@ -6044,6 +6551,7 @@ impl CyberApp {
             self.intro = crate::intro::Intro::start();
         }
         if hidden {
+            self.brand_played = true;
             if self.tray.is_some() {
                 self.hidden = true;
                 if let Ok(mut n) = self.notify.lock() {

@@ -54,6 +54,8 @@ pub enum Cmd {
     SendChat { channel: ChannelId, body: String },
     RequestSync { channel: ChannelId, since_ms: u64 },
     JoinVoice { channel: ChannelId },
+    /// Send a call signal to a friend (DM topic).
+    Call { peer: String, id: u64, kind: crate::types::CallKind, round: u32 },
     LeaveVoice,
     SetMic(bool),
     /// Save a friend (connect code or bare ID), find and dial them, open the DM room.
@@ -134,6 +136,8 @@ pub enum UiEvent {
     /// Voice counters for developer mode: frames sent / received since the
     /// last report (every 5 s), and the playback buffer in ms.
     VoiceStats { sent: u32, recv: u32, buffer_ms: u32 },
+    /// A call signal from a friend.
+    Call { peer: String, name: String, id: u64, kind: crate::types::CallKind },
     /// Someone's public voice room (from their heartbeat); None = not in voice.
     VoiceRoster { peer: String, name: String, room: Option<String> },
     Friend { peer_id: String, name: String, online: bool },
@@ -694,6 +698,10 @@ async fn run(
                         emit(&event_tx, UiEvent::VoiceJoined { room: Some(format!("{}/{}", channel.guild, channel.channel)) });
                         let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone() };
                         let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
+                    }
+                    Cmd::Call { peer, id, kind, round } => {
+                        let t = IdentTopic::new(dm_topic(&local_id, &peer));
+                        let _ = swarm.behaviour_mut().gossipsub.publish(t, Wire::Call { id, kind, name: name.clone(), round }.encode());
                     }
                     Cmd::LeaveVoice => {
                         if let Some(prev) = voice_room.take() {
@@ -1529,6 +1537,14 @@ async fn run(
                                         }
                                     }
                                     emit(&event_tx, UiEvent::Chat(ev));
+                                }
+                            }
+                            Wire::Call { id, kind, name: caller, .. } => {
+                                // only on the DM topic, and only from that friend
+                                if let (Some(local), Some(author)) = (topic_of_hash.get(&th), message_author(&message)) {
+                                    if local.is_dm() && local.channel == author {
+                                        emit(&event_tx, UiEvent::Call { peer: author, name: caller, id, kind });
+                                    }
                                 }
                             }
                             Wire::SyncReq { since_ms, .. } => {

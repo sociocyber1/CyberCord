@@ -6,6 +6,8 @@ mod app;
 mod dev;
 mod update;
 mod papers;
+mod sounds;
+mod invite;
 mod camera;
 mod blocks;
 mod docs;
@@ -69,6 +71,14 @@ struct Args {
     #[arg(long, default_value = "sce/welcome")]
     channel: String,
 
+    /// Write the interface sounds as WAV files into this folder and exit.
+    #[arg(long, hide = true)]
+    export_sounds: Option<PathBuf>,
+
+    /// Write the invitation card (PNG) to this file and exit.
+    #[arg(long, hide = true)]
+    export_card: Option<PathBuf>,
+
     /// Developer mode (Settings → About → Developer mode does the same).
     #[arg(long)]
     dev: bool,
@@ -111,6 +121,22 @@ fn main() -> anyhow::Result<()> {
         quic_port: args.quic_port,
         voice_bot: args.voice_bot.as_deref().map(make_bot),
     };
+    if let Some(dir) = &args.export_sounds {
+        std::fs::create_dir_all(dir)?;
+        for sfx in sounds::ALL {
+            let t = sounds::track(sfx);
+            let pcm: Vec<i16> = t.samples.iter().map(|v| (v * 32767.0) as i16).collect();
+            let name = format!("{:02}-{}.wav", sounds::ALL.iter().position(|x| *x == sfx).unwrap_or(0) + 1, sfx.key().trim_start_matches("sfx_"));
+            std::fs::write(dir.join(name), voice_rec::wav(t.rate, &pcm))?;
+        }
+        return Ok(());
+    }
+    if let Some(path) = &args.export_card {
+        let lang = i18n::system();
+        let tr = |k: &str| i18n::tr_dyn(lang, k);
+        invite::card(&args.name, tr("invite_tagline"), tr("motto_sce"), tr("invite_find_me"), tr("invite_scan_short")).save(path)?;
+        return Ok(());
+    }
     if args.dev {
         std::env::set_var("CYBERCORD_DEV", "1");
     }
@@ -180,6 +206,8 @@ commands:
   /nodes                         the nodes this node knows (the network map)
   /voice [guild/room]            join a voice channel (e.g. /voice sce/lounge)
   /leave                         leave voice
+  /call <friend>                 ring a friend (they answer in the window)
+  /answer, /decline, /hangup     answer / decline the last call, hang up
   /quit
 anything else is sent to the open channel.";
 
@@ -238,6 +266,10 @@ fn run_headless(cfg: NetConfig, channel: &str, bot_room: Option<String>) -> anyh
     let xfers: Arc<Mutex<Vec<cybercord_node::transfer::TransferInfo>>> = Arc::new(Mutex::new(Vec::new()));
     let xfers2 = xfers.clone();
 
+    // calls: (peer, call id) of the last incoming ring and of my current call
+    let incoming: Arc<Mutex<Option<(String, u64)>>> = Arc::new(Mutex::new(None));
+    let in2 = incoming.clone();
+    let mut active: Option<(String, u64)> = None;
     let ev_rx = handle.event_rx;
     let (a2, f2, id2, st2) = (addrs.clone(), friends.clone(), my_id.clone(), stats.clone());
     let printer = std::thread::spawn(move || {
@@ -295,6 +327,18 @@ fn run_headless(cfg: NetConfig, channel: &str, bot_room: Option<String>) -> anyh
                         println!("· {name} is talking");
                     }
                     talk_seen.insert(name, now);
+                }
+                UiEvent::Call { peer, name, id, kind } => {
+                    println!("· call {kind:?} from {name}");
+                    match kind {
+                        cybercord_node::types::CallKind::Ring => *in2.lock().unwrap() = Some((peer, id)),
+                        _ => {
+                            let mut g = in2.lock().unwrap();
+                            if g.as_ref().map(|(_, i)| *i == id).unwrap_or(false) && !matches!(kind, cybercord_node::types::CallKind::Accept) {
+                                *g = None;
+                            }
+                        }
+                    }
                 }
                 UiEvent::VoiceStats { sent, recv, buffer_ms } => println!("· voice: sent {sent} · received {recv} frames / 5 s · buffer {buffer_ms} ms"),
                 UiEvent::Nodes(list) => *nodes2.lock().unwrap() = list,
@@ -363,6 +407,42 @@ fn run_headless(cfg: NetConfig, channel: &str, bot_room: Option<String>) -> anyh
                     let _ = handle.cmd_tx.send(Cmd::JoinVoice { channel: ch });
                 }
                 "leave" => {
+                    let _ = handle.cmd_tx.send(Cmd::LeaveVoice);
+                }
+                "call" => {
+                    use cybercord_node::types::CallKind;
+                    let target = friends.lock().unwrap().iter().find(|(p, n)| n == arg || p == arg).map(|(p, _)| p.clone());
+                    match target {
+                        Some(peer) => {
+                            let id: u64 = rand::random();
+                            for round in 0..3 {
+                                let _ = handle.cmd_tx.send(Cmd::Call { peer: peer.clone(), id, kind: CallKind::Ring, round });
+                            }
+                            let _ = handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::dm(peer.clone()) });
+                            println!("· calling {arg}…");
+                            active = Some((peer, id));
+                        }
+                        None => println!("usage: /call <friend-name>"),
+                    }
+                }
+                "answer" | "decline" => {
+                    use cybercord_node::types::CallKind;
+                    match incoming.lock().unwrap().take() {
+                        Some((peer, id)) => {
+                            let kind = if cmd == "answer" { CallKind::Accept } else { CallKind::Decline };
+                            let _ = handle.cmd_tx.send(Cmd::Call { peer: peer.clone(), id, kind, round: 0 });
+                            if cmd == "answer" {
+                                let _ = handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::dm(peer.clone()) });
+                                active = Some((peer, id));
+                            }
+                        }
+                        None => println!("no incoming call"),
+                    }
+                }
+                "hangup" => {
+                    if let Some((peer, id)) = active.take() {
+                        let _ = handle.cmd_tx.send(Cmd::Call { peer, id, kind: cybercord_node::types::CallKind::End, round: 0 });
+                    }
                     let _ = handle.cmd_tx.send(Cmd::LeaveVoice);
                 }
                 "scan" => {

@@ -630,3 +630,50 @@ papers_link	Link to the chat	Ссылка в чат	Посилання в чат
 papers_page	Page	Страница	Сторінка	Seite	Página	Page	页面	ページ
 papers_saved	Saved: {p}	Сохранено: {p}	Збережено: {p}	Gespeichert: {p}	Guardado: {p}	Enregistré : {p}	已保存：{p}	保存しました：{p}
 papers_pdf_failed	PDF not downloaded	PDF не скачан	PDF не завантажено	PDF nicht geladen	PDF no descargado	PDF non téléchargé	PDF 未下载	PDFを取得できません
+sfx_h	Interface sounds	Звуки интерфейса	Звуки інтерфейсу	Oberflächenklänge	Sonidos de la interfaz	Sons de l'interface	界面音效	インターフェース音
+sfx_on	Play soft sounds	Мягкие звуки	М'які звуки	Sanfte Klänge	Sonidos suaves	Sons doux	柔和音效	やわらかい音
+sfx_vol	Volume	Громкость	Гучність	Lautstärke	Volumen	Volume	音量	音量
+sfx_g_msg	New messages in other channels	Новые сообщения в других каналах	Нові повідомлення в інших каналах	Neue Nachrichten in anderen Kanälen	Mensajes nuevos en otros canales	Nouveaux messages dans d'autres salons	其他频道的新消息	他のチャンネルの新着
+sfx_g_mention	Direct messages and mentions	Личные сообщения и упоминания	Особисті повідомлення та згадки	Direktnachrichten und Erwähnungen	Mensajes directos y menciones	Messages privés et mentions	私信和提及	DMとメンション
+sfx_g_voice	Voice rooms: joining and leaving	Голосовые: вход и выход	Голосові: вхід і вихід	Sprachräume: betreten und verlassen	Salas de voz: entrar y salir	Salons vocaux : entrée et sortie	语音室：进入与离开	ボイス：入室と退室
+sfx_g_call	Calls	Звонки	Дзвінки	Anrufe	Llamadas	Appels	通话	通話
+sfx_g_start	Sound logo at start	Звуковой логотип при запуске	Звуковий логотип під час запуску	Klanglogo beim Start	Logo sonoro al iniciar	Logo sonore au démarrage	启动时的声音标志	起動時のサウンドロゴ
+sfx_g_sent	Message sent	Сообщение отправлено	Повідомлення надіслано	Nachricht gesendet	Mensaje enviado	Message envoyé	消息已发送	送信
+sfx_brand	logo	логотип	логотип	Logo	logo	logo	标志	ロゴ
+sfx_message	message	сообщение	повідомлення	Nachricht	mensaje	message	消息	メッセージ
+sfx_mention	mention	упоминание	згадка	Erwähnung	mención	mention	提及	メンション
+sfx_sent	sent	отправлено	надіслано	gesendet	enviado	envoyé	已发送	送信
+sfx_voice_join	I join	я вошёл	я увійшов	ich trete bei	entro	j'entre	我进入	入室
+sfx_voice_leave	I leave	я вышел	я вийшов	ich gehe	salgo	je sors	我离开	退室
+sfx_peer_join	someone joins	кто-то вошёл	хтось увійшов	jemand kommt	alguien entra	quelqu'un entre	有人进入	誰かが入室
+sfx_peer_leave	someone leaves	кто-то вышел	хтось вийшов	jemand geht	alguien sale	quelqu'un sort	有人离开	誰かが退室
+sfx_ring	ringtone	мелодия звонка	мелодія дзвінка	Klingelton	tono	sonnerie	铃声	着信音
+sfx_ringback	calling…	вызов…	виклик…	Rufton	llamando…	appel…	呼叫中…	呼び出し中…
+sfx_call_start	connected	соединено	з'єднано	verbunden	conectado	connecté	已接通	接続
+sfx_call_end	hung up	завершён	завершено	aufgelegt	colgado	raccroché	已挂断	終了
+call_incoming	Incoming call	Входящий звонок	Вхідний дзвінок	Eingehender Anruf	Llamada entrante	Appel entrant	来电	着信
+call_accept	Accept	Принять	Прийняти	Annehmen	Aceptar	Accepter	接听	応答
+call_decline	Decline	Отклонить	Відхилити	Ablehnen	Rechazar	Refuser	拒绝	拒否
+call_calling	Calling {name}	Звоним: {name}	Дзвонимо: {name}	Rufe {name} an	Llamando a {name}	Appel de {name}	正在呼叫 {name}	{name} に発信中
+call_with	Call with {name} · {t}	Звонок: {name} · {t}	Дзвінок: {name} · {t}	Anruf mit {name} · {t}	Llamada con {name} · {t}	Appel avec {name} · {t}	与 {name} 通话 · {t}	{name} と通話中 · {t}
+call_cancel	Cancel	Отменить	Скасувати	Abbrechen	Cancelar	Annuler	取消	キャンセル
+call_hangup	Hang up	Завершить	Завершити	Auflegen	Colgar	Raccrocher	挂断	切る
+call_declined	{name} declined the call	Звонок отклонён: {name}	Дзвінок відхилено: {name}	{name} hat abgelehnt	{name} rechazó la llamada	{name} a refusé l'appel	{name} 拒绝了通话	{name} が拒否しました
+call_busy	{name} is in another call	Сейчас в другом звонке: {name}	Зараз в іншому дзвінку: {name}	{name} telefoniert gerade	{name} está en otra llamada	{name} est déjà en appel	{name} 正在通话中	{name} は通話中です
+call_busy_me	You are already in a call	Вы уже в звонке	Ви вже в дзвінку	Sie telefonieren bereits	Ya estás en una llamada	Vous êtes déjà en appel	您已在通话中	すでに通話中です
+call_missed	Missed call from {name}	Пропущенный звонок: {name}	Пропущений дзвінок: {name}	Verpasster Anruf von {name}	Llamada perdida de {name}	Appel manqué de {name}	{name} 的未接来电	{name} からの不在着信
+call_no_answer	{name} does not answer	Не отвечает: {name}	Не відповідає: {name}	{name} antwortet nicht	{name} no contesta	{name} ne répond pas	{name} 无应答	{name} が応答しません
+call_ended	Call with {name} ended · {t}	Звонок завершён: {name} · {t}	Дзвінок завершено: {name} · {t}	Anruf mit {name} beendet · {t}	Llamada con {name} terminada · {t}	Appel avec {name} terminé · {t}	与 {name} 的通话结束 · {t}	{name} との通話終了 · {t}
+invite_h	Invite friends	Пригласить друзей	Запросити друзів	Freunde einladen	Invitar amigos	Inviter des amis	邀请朋友	友だちを招待
+invite_sub	CyberCord grows only from person to person: no ads, no company. Send a ready invitation, a QR code or a picture card.	CyberCord растёт только от человека к человеку: без рекламы и без компании. Отправьте готовое приглашение, QR-код или карточку-картинку.	CyberCord росте лише від людини до людини: без реклами і без компанії. Надішліть готове запрошення, QR-код або картку-зображення.					
+invite_btn	Invite a friend	Пригласить друга	Запросити друга	Freund einladen	Invitar a un amigo	Inviter un ami	邀请朋友	友だちを招待
+invite_how	Copy the text into any messenger, show the QR code, or save the card and post it in a channel.	Скопируйте текст в любой мессенджер, покажите QR-код или сохраните карточку и опубликуйте её в канале.	Скопіюйте текст у будь-який месенджер, покажіть QR-код або збережіть картку й опублікуйте її в каналі.					
+invite_copy	Copy invitation	Копировать приглашение	Копіювати запрошення	Einladung kopieren	Copiar invitación	Copier l'invitation	复制邀请	招待文をコピー
+invite_copy_link	Copy link	Копировать ссылку	Копіювати посилання	Link kopieren	Copiar enlace	Copier le lien	复制链接	リンクをコピー
+invite_copied	Copied	Скопировано	Скопійовано	Kopiert	Copiado	Copié	已复制	コピーしました
+invite_card	Save picture card (PNG)	Сохранить карточку (PNG)	Зберегти картку (PNG)	Bildkarte speichern (PNG)	Guardar tarjeta (PNG)	Enregistrer la carte (PNG)	保存图片卡 (PNG)	画像カードを保存 (PNG)
+invite_card_tip	1200×630 — the size messengers and social networks show as a preview	1200×630 — размер, который мессенджеры и соцсети показывают как превью	1200×630 — розмір, який месенджери й соцмережі показують як прев'ю					
+invite_scan	Scan to download CyberCord	Наведите камеру — скачать CyberCord	Наведіть камеру — завантажити CyberCord	Scannen zum Herunterladen	Escanea para descargar	Scannez pour télécharger	扫码下载 CyberCord	スキャンしてダウンロード
+invite_scan_short	Scan to download	Скачать CyberCord	Завантажити CyberCord	Scannen und laden	Escanea y descarga	Scannez et téléchargez	扫码下载	スキャンして入手
+invite_tagline	Chat and voice without servers. Every user is a node of the network.	Чат и голосовые без серверов. Каждый пользователь — узел сети.	Чат і голосові без серверів. Кожен користувач — вузол мережі.	Chat und Sprache ohne Server. Jeder Nutzer ist ein Knoten.	Chat y voz sin servidores. Cada usuario es un nodo.	Chat et voix sans serveurs. Chaque utilisateur est un nœud.	无服务器的聊天和语音。每个用户都是网络节点。	サーバーなしのチャットと通話。全員がネットワークのノード。
+invite_find_me	Find me in CyberCord: {name}	Найди меня в CyberCord: {name}	Знайди мене в CyberCord: {name}	Finde mich in CyberCord: {name}	Búscame en CyberCord: {name}	Trouve-moi sur CyberCord : {name}	在 CyberCord 找我：{name}	CyberCord で {name} を探してね

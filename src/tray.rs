@@ -133,6 +133,16 @@ fn show_native() {
     }
 }
 
+/// Show and focus the window (used for an incoming call), even while hidden.
+pub fn bring_to_front(ctx: &egui::Context) {
+    #[cfg(windows)]
+    show_native();
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    ctx.request_repaint();
+}
+
 fn send(tx: &Sender<TrayCmd>, ctx: &egui::Context, cmd: TrayCmd) {
     let _ = tx.send(cmd.clone());
     // Act right away even while the window is hidden (no frames are drawn then).

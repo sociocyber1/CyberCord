@@ -1,6 +1,6 @@
 [package]
 name = "cybercord-node"
-version = "0.19.0"
+version = "0.20.0"
 edition = "2021"
 description = "CyberCord — serverless peer-to-peer chat (SocioCyberneering Inc.)"
 license = "MIT OR Apache-2.0"
@@ -20,6 +20,9 @@ flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+# invitations: QR code and a PNG card drawn with the brand fonts
+qrcode = { version = "0.14", default-features = false }
+ab_glyph = "0.2"
 libp2p = { version = "0.54", features = [
     "tokio", "tcp", "quic", "noise", "yamux",
     "gossipsub", "mdns", "identify", "ping", "ed25519", "macros",
