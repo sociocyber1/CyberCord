@@ -501,3 +501,10 @@ ch_writers-room	writers-room	комната-авторов	кімната-авт
 ch_writing	writing	письмо	письмо	schreiben	escritura	écriture	写作	執筆
 ch_translate_opt	Show channel names in my language	Показывать названия каналов на моём языке	Показувати назви каналів моєю мовою	Kanalnamen in meiner Sprache zeigen	Mostrar los canales en mi idioma	Afficher les salons dans ma langue	以我的语言显示频道名称	チャンネル名を自分の言語で表示
 ch_translate_note	Only the display changes: everyone still meets in the same channels.	Меняется только отображение: все по-прежнему встречаются в тех же каналах.	Змінюється лише відображення: усі так само зустрічаються в тих самих каналах.	Nur die Anzeige ändert sich: alle treffen sich weiter in denselben Kanälen.	Solo cambia la vista: todos siguen en los mismos canales.	Seul l'affichage change : tout le monde reste dans les mêmes salons.	只改变显示：大家仍在同一个频道交流。	表示だけが変わります。全員が同じチャンネルで会話します。
+intro_skip	Skip ›	Пропустить ›	Пропустити ›	Überspringen ›	Saltar ›	Passer ›	跳过 ›	スキップ ›
+splash_motto	A world without politics, poverty and war. A resource-based economy.	Мир без политики, нищеты и войн. Ресурсо-ориентированная экономика.	Світ без політики, злиднів і воєн. Ресурсо-орієнтована економіка.	Eine Welt ohne Politik, Armut und Krieg. Eine ressourcenbasierte Wirtschaft.	Un mundo sin política, pobreza ni guerras. Una economía basada en recursos.	Un monde sans politique, pauvreté ni guerre. Une économie basée sur les ressources.	没有政治、贫困与战争的世界。资源型经济。	政治も貧困も戦争もない世界。資源ベース経済。
+intro_opt	Intro video at start:	Видео при запуске:	Відео під час запуску:	Intro-Video beim Start:	Vídeo al iniciar:	Vidéo au démarrage :	启动视频：	起動時の動画：
+intro_always	every time	каждый раз	щоразу	jedes Mal	siempre	à chaque fois	每次	毎回
+intro_first	first time only	только в первый раз	лише вперше	nur beim ersten Mal	solo la primera vez	la première fois	仅首次	初回のみ
+intro_never	never	никогда	ніколи	nie	nunca	jamais	从不	表示しない
+intro_watch	Watch now	Смотреть	Дивитися	Ansehen	Ver	Regarder	观看	今すぐ見る

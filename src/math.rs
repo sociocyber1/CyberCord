@@ -486,7 +486,7 @@ fn layout(cx: &Ctx, n: &Node, size: f32, ops: &mut Vec<Draw>, origin: Vec2) -> M
             let h = (m.asc + m.desc).max(size);
             let ds = (h * 1.05).max(size);
             let mut x = 0.0;
-            let mut put = |s: &str, x: &mut f32, ops: &mut Vec<Draw>| {
+            let put = |s: &str, x: &mut f32, ops: &mut Vec<Draw>| {
                 if s.is_empty() {
                     return;
                 }

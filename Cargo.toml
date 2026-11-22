@@ -1,6 +1,6 @@
 [package]
 name = "cybercord-node"
-version = "0.15.1"
+version = "0.16.0"
 edition = "2021"
 description = "CyberCord — serverless peer-to-peer chat (SocioCyberneering Inc.)"
 license = "MIT OR Apache-2.0"
@@ -42,6 +42,8 @@ image = { version = "0.25", default-features = false, features = ["gif", "png", 
 # Music messages: pure-Rust decoding of mp3 / flac / ogg-vorbis / wav / m4a-aac.
 mainline = "8"
 hayro = "0.9"
+openh264 = "0.9"
+mp4 = "0.14"
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 # Desktop notifications (D-Bus on Linux, toast on Windows).
 notify-rust = "4"

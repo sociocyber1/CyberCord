@@ -114,7 +114,12 @@ pub fn decode(bytes: &[u8]) -> Result<Track, String> {
     let (mut probed, _) = open(bytes)?;
     let (title, artist) = read_tags(&mut probed);
     let mut format = probed.format;
-    let track = format.default_track().ok_or("no audio track")?;
+    // the first track we can decode (in a video file the default track is the picture)
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| symphonia::default::get_codecs().make(&t.codec_params, &DecoderOptions::default()).is_ok())
+        .ok_or("no audio track")?;
     let id = track.id;
     let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()).map_err(|e| e.to_string())?;
     let mut rate = track.codec_params.sample_rate.unwrap_or(44_100);

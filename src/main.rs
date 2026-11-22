@@ -7,6 +7,7 @@ mod camera;
 mod blocks;
 mod docs;
 mod fx;
+mod intro;
 mod math;
 mod pdfview;
 mod emoji;

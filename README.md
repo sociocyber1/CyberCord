@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.15.1</h1>
+<h1 align="center">CyberCord 0.16</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -96,6 +96,20 @@ CyberCord похож на Discord, но у него нет центрально�
 - [Концепция (PDF)](docs/concept/cybercord-concept.pdf) — исходный документ
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
+
+## Что нового в 0.16
+
+- **Интро-видео при запуске** — встроено в программу (H.264 + звук, ~15 МБ),
+  играет прямо в окне: декодер OpenH264, звук через встроенный плеер.
+  «Пропустить ›», Esc, пробел или Enter — сразу дальше. Настройки → Внешний
+  вид: «каждый раз», «только в первый раз» или «никогда», и кнопка
+  «Смотреть». При автозапуске в трей не показывается.
+- **Заставка:** планета CyberCord, «CyberCord» и девиз «Мир без политики,
+  нищеты и войн. Ресурсо-ориентированная экономика.» фирменным шрифтом
+  Montserrat; девиз проступает, как в анимации «взлом». Клик — пропустить.
+- Девиз сервера в левой панели — в одну строку (полностью — при наведении).
+
+![Заставка](docs/img/screen-splash.png)
 
 ## Что нового в 0.15.1
 
@@ -418,12 +432,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.15.1-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.16.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.15.1-linux-x86_64.tar.gz
-cd cybercord-0.15.1-linux-x86_64
+tar xf cybercord-0.16.0-linux-x86_64.tar.gz
+cd cybercord-0.16.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -619,6 +633,9 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 - Фирменный шрифт: [Montserrat](https://github.com/JulietaUla/Montserrat),
   © The Montserrat Project Authors, SIL OFL 1.1 (`assets/fonts/LICENSE-Montserrat.txt`).
 - Чтение PDF: [hayro](https://github.com/LaurenzV/hayro), Apache-2.0 / MIT.
+- Видео: [OpenH264](https://github.com/cisco/openh264) (BSD-2-Clause) через
+  крейт `openh264`, разбор MP4 — крейт `mp4` (MIT); интро-видео — материалы
+  SocioCyberneering.
 - Иконки серверов и иллюстрации: SocioCyberneering Inc., нарисованы для
   CyberCord (`tools/make_icons.py`, `tools/make_guide.py`,
   `tools/make_docs_art.py`, `tools/make_readme_art.py`, `tools/make_emoji.py`, `tools/make_gifs.py`).
@@ -626,6 +643,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.16:** an intro video plays at start inside the app (OpenH264 + built-in audio; skip with the button, Esc, Space or Enter; "every time / first time / never" in Settings → Appearance), followed by a splash with the CyberCord planet and the motto in the Montserrat brand font.
 
 **0.15:** LaTeX formulas in chat (`$…$`, `$$…$$`) with a formula mode, snippet bar and live preview; scale and chart blocks with a friendly editor (authors edit them into a new indexed version); an image button with the system file dialog; "SocioCyberneering Co-op" and server mottos; an "Atom-Generator: where to start" document.
 

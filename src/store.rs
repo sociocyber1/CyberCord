@@ -311,6 +311,11 @@ pub struct Settings {
     /// Show channel names in the interface language.
     #[serde(default = "yes")]
     pub ch_translate: bool,
+    /// Intro video at start: "always" (default), "first" or "never".
+    #[serde(default)]
+    pub intro_mode: String,
+    #[serde(default)]
+    pub intro_seen: bool,
 }
 
 fn hundred() -> f32 {

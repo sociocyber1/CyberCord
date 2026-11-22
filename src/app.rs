@@ -242,6 +242,9 @@ pub struct CyberApp {
     math_mode: bool,
     /// editor for a scale or chart block (new, or one in my message)
     block_ed: Option<BlockEd>,
+    /// start-up: intro video, then the splash (planet + motto)
+    intro: Option<crate::intro::Intro>,
+    splash: Option<Instant>,
     preview_h: f32,
     /// picked image file from the system dialog (runs on its own thread)
     pick_rx: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
@@ -366,6 +369,8 @@ impl CyberApp {
             index_pick: false,
             math_mode: false,
             block_ed: None,
+            intro: None,
+            splash: None,
             preview_h: 0.0,
             pick_rx: None,
             words_toast_at: None,
@@ -749,6 +754,92 @@ impl CyberApp {
         }
     }
 
+    /// Intro video, then the splash. Returns true while one of them covers the window.
+    fn startup_screens(&mut self, ctx: &egui::Context) -> bool {
+        if self.intro.is_none() && self.splash.is_none() {
+            return false;
+        }
+        let skip_key = ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Space) || i.key_pressed(egui::Key::Enter));
+        let mut skip = false;
+        let skip_label = self.t("intro_skip");
+        if let Some(intro) = self.intro.as_mut() {
+            let playing = egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
+                let rect = ui.max_rect();
+                let go = intro.show(ui, rect);
+                // progress line and the skip button
+                let k = (intro.elapsed() / intro.duration.max(1.0)).clamp(0.0, 1.0) as f32;
+                ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(rect.min.x, rect.max.y - 3.0), egui::vec2(rect.width() * k, 3.0)), 0.0, th().accent);
+                let b = egui::Rect::from_min_size(egui::pos2(rect.max.x - 150.0, rect.max.y - 56.0), egui::vec2(130.0, 36.0));
+                if ui.put(b, egui::Button::new(RichText::new(skip_label).color(Color32::WHITE).strong()).fill(Color32::from_black_alpha(140)).stroke(Stroke::new(1.0, Color32::from_white_alpha(90))).rounding(Rounding::same(18.0))).clicked() {
+                    skip = true;
+                }
+                go
+            });
+            if !playing.inner || skip || skip_key {
+                self.intro = None;
+                self.splash = Some(Instant::now());
+                if !self.settings.intro_seen {
+                    self.settings.intro_seen = true;
+                    store::save_settings(&self.settings);
+                }
+            }
+            return true;
+        }
+        let Some(at) = self.splash else { return false };
+        let t = at.elapsed().as_secs_f32();
+        const LEN: f32 = 2.6;
+        let clicked = ctx.input(|i| i.pointer.any_click());
+        if t > LEN || skip_key || clicked {
+            self.splash = None;
+            return false;
+        }
+        let fade = if t > LEN - 0.45 { (LEN - t) / 0.45 } else { 1.0 };
+        let a = |c: Color32| c.gamma_multiply(fade.clamp(0.0, 1.0));
+        let motto = self.t("splash_motto");
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_rgb(0x0b, 0x12, 0x20))).show(ctx, |ui| {
+            let r = ui.max_rect();
+            let p = ui.painter();
+            // soft glow behind the planet
+            {
+                // radial glow: a triangle fan from a bright centre to a transparent rim
+                let c0 = r.center() - egui::vec2(0.0, 60.0);
+                let mut mesh = egui::epaint::Mesh::default();
+                mesh.colored_vertex(c0, a(Color32::from_rgba_premultiplied(30, 70, 125, 125)));
+                let n = 96;
+                for k in 0..=n {
+                    let ang = std::f32::consts::TAU * k as f32 / n as f32;
+                    mesh.colored_vertex(c0 + egui::vec2(ang.cos(), ang.sin()) * 260.0, Color32::TRANSPARENT);
+                }
+                for k in 1..=n as u32 {
+                    mesh.add_triangle(0, k, k + 1);
+                }
+                p.add(egui::Shape::mesh(mesh));
+            }
+            let grow = (t / 0.6).min(1.0);
+            let s = 150.0 * (0.8 + 0.2 * ease_out(grow));
+            let tex = self.icons.get(ui.ctx(), "app256", APP_ICON_256);
+            p.image(tex, egui::Rect::from_center_size(r.center() - egui::vec2(0.0, 60.0), egui::vec2(s, s)), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), a(Color32::WHITE));
+            let brand = |size: f32| egui::FontId::new(size, egui::FontFamily::Name("brand".into()));
+            let job = |text: &str, size: f32, col: Color32, spacing: f32| {
+                let mut j = egui::text::LayoutJob::default();
+                j.append(text, 0.0, egui::TextFormat { font_id: brand(size), color: col, extra_letter_spacing: size * spacing, ..Default::default() });
+                j.wrap.max_width = r.width() - 60.0;
+                j.halign = egui::Align::Center;
+                ui.fonts(|f| f.layout_job(j))
+            };
+            let g = job("CyberCord", 40.0, a(Color32::WHITE), 0.06);
+            p.galley(egui::pos2(r.center().x, r.center().y + 40.0), g, Color32::WHITE);
+            // the motto "decrypts" like the messages do
+            let shown = if self.settings.hack_fx { crate::fx::scrambled(motto, (t - 0.3).max(0.0) * 0.55, 0x5ce) } else { motto.to_string() };
+            let g = job(&shown, 17.0, a(Color32::from_rgb(0xc0, 0xd8, 0xf5)), 0.04);
+            p.galley(egui::pos2(r.center().x, r.center().y + 100.0), g, Color32::WHITE);
+            let g = job("SocioCyberneering Inc.", 13.0, a(Color32::from_white_alpha(170)), 0.12);
+            p.galley(egui::pos2(r.center().x, r.max.y - 44.0), g, Color32::WHITE);
+        });
+        ctx.request_repaint();
+        true
+    }
+
     fn open_builtin_pdf(&mut self, file: &str) {
         if let Some((title, name, bytes)) = crate::pdfview::builtin(file) {
             self.pdf = Some(crate::pdfview::PdfView::open(title, name, Arc::new(bytes.to_vec())));
@@ -1077,6 +1168,9 @@ impl eframe::App for CyberApp {
         if (ctx.zoom_factor() - zoom).abs() > 0.001 && !ctx.input(|i| i.pointer.any_down()) {
             ctx.set_zoom_factor(zoom);
         }
+        if self.startup_screens(ctx) {
+            return;
+        }
         if self.show_settings {
             self.settings_screen(ctx);
             self.doc_overlay(ctx);
@@ -1288,7 +1382,8 @@ impl CyberApp {
                     ui.vertical(|ui| {
                         ui.label(RichText::new(server.name).color(th().ink).b().size(15.5));
                         let motto = self.td(&format!("motto_{}", server.slug));
-                        ui.add(egui::Label::new(RichText::new(if motto.is_empty() { self.t("server_label") } else { motto }).color(th().ink2).small()).wrap());
+                        let line = if motto.is_empty() { self.t("server_label") } else { motto };
+                        ui.add(egui::Label::new(RichText::new(line).color(th().ink2).small()).truncate()).on_hover_text(line);
                         if server.slug == "atom-generator" && ui.link(RichText::new(self.t("atom_start")).small()).clicked() {
                             self.doc_open = Some(Doc::Atom);
                         }
@@ -3039,6 +3134,7 @@ fn member_row(ui: &mut egui::Ui, name: &str, role: Option<&str>, connected: bool
 
 // ---- icons (GNOME-style tiles + symbolic icons, pre-rendered from SVG) ----
 const APP_ICON: &[u8] = include_bytes!("../assets/icon-128.png");
+const APP_ICON_256: &[u8] = include_bytes!("../assets/icon-256.png");
 const FRIENDS_TILE: &[u8] = include_bytes!("../assets/servers/friends.png");
 const SYM_SPEAKER: &[u8] = include_bytes!("../assets/symbolic/speaker.png");
 const SYM_HASH: &[u8] = include_bytes!("../assets/symbolic/hash.png");
@@ -3837,6 +3933,21 @@ impl CyberApp {
         if ui.checkbox(&mut self.settings.hack_fx, label).changed() {
             store::save_settings(&self.settings);
         }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(self.t("intro_opt"));
+            let cur = if self.settings.intro_mode.is_empty() { "always".to_string() } else { self.settings.intro_mode.clone() };
+            for (id, key) in [("always", "intro_always"), ("first", "intro_first"), ("never", "intro_never")] {
+                if ui.selectable_label(cur == id, self.t(key)).clicked() {
+                    self.settings.intro_mode = id.into();
+                    store::save_settings(&self.settings);
+                }
+            }
+            if ui.button(self.t("intro_watch")).clicked() {
+                self.intro = crate::intro::Intro::start();
+                self.show_settings = false;
+            }
+        });
         ui.add_space(14.0);
         ui.label(RichText::new(self.t("theme_h").to_uppercase()).color(c.ink2).size(12.0).b());
         ui.add_space(8.0);
@@ -4717,6 +4828,17 @@ fn status_color(id: &str) -> Option<Color32> {
 
 impl CyberApp {
     fn started_hidden(mut self, hidden: bool) -> Self {
+        let mode = self.settings.intro_mode.as_str();
+        let play = !hidden && std::env::var("CYBERCORD_START").is_err() && (mode.is_empty() || mode == "always" || (mode == "first" && !self.settings.intro_seen));
+        if play {
+            self.intro = crate::intro::Intro::start();
+        }
+        if !hidden && std::env::var("CYBERCORD_START").map(|v| !v.contains("nosplash")).unwrap_or(true) {
+            self.splash = Some(Instant::now());
+        }
+        if std::env::var("CYBERCORD_START").map(|v| v.contains("intro")).unwrap_or(false) {
+            self.intro = crate::intro::Intro::start();
+        }
         if hidden {
             if self.tray.is_some() {
                 self.hidden = true;
