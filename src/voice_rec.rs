@@ -67,10 +67,51 @@ impl MicRecorder {
                 err,
                 None,
             ),
-            _ => return None,
+            cpal::SampleFormat::I32 => {
+                let b2 = buf.clone();
+                let lv3 = level.clone();
+                dev.build_input_stream(
+                    &cfg.into(),
+                    move |d: &[i32], _: &_| {
+                        let mut v = b2.lock().unwrap();
+                        let g = cybercord_node::voice::in_gain();
+                        let peak = d.iter().fold(0f32, |m, x| m.max((*x as f32 / i32::MAX as f32).abs())) * g;
+                        lv3.store(peak.min(1.0).to_bits(), Ordering::Relaxed);
+                        if v.len() < cap {
+                            v.extend(d.chunks(ch).map(|f| ((f[0] as f32 / i32::MAX as f32 * g).clamp(-1.0, 1.0) * 32767.0) as i16));
+                        }
+                    },
+                    err,
+                    None,
+                )
+            }
+            cpal::SampleFormat::U16 => {
+                let b2 = buf.clone();
+                let lv3 = level.clone();
+                dev.build_input_stream(
+                    &cfg.into(),
+                    move |d: &[u16], _: &_| {
+                        let mut v = b2.lock().unwrap();
+                        let g = cybercord_node::voice::in_gain();
+                        let to = |x: u16| (x as f32 - 32768.0) / 32768.0;
+                        let peak = d.iter().fold(0f32, |m, x| m.max(to(*x).abs())) * g;
+                        lv3.store(peak.min(1.0).to_bits(), Ordering::Relaxed);
+                        if v.len() < cap {
+                            v.extend(d.chunks(ch).map(|f| ((to(f[0]) * g).clamp(-1.0, 1.0) * 32767.0) as i16));
+                        }
+                    },
+                    err,
+                    None,
+                )
+            }
+            other => {
+                eprintln!("circle mic: unsupported sample format {other:?}");
+                return None;
+            }
         }
+        .map_err(|e| eprintln!("circle mic: cannot open input: {e}"))
         .ok()?;
-        stream.play().ok()?;
+        stream.play().map_err(|e| eprintln!("circle mic: cannot start: {e}")).ok()?;
         Some(Self { level, _stream: stream, buf, rate })
     }
 

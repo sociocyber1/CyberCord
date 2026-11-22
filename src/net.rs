@@ -85,6 +85,8 @@ pub enum Cmd {
     SetScan(bool),
     /// Status shown to others.
     SetStatus(String),
+    /// Save and publish my profile (the node sets peer, name, version and signs it).
+    SetProfile(crate::profile::Profile),
     /// Share a local file of any size in a room (hashing runs in the background).
     ShareFile { channel: ChannelId, path: PathBuf, body: String },
     /// Queue a download; it starts whenever someone who has the file is online.
@@ -119,6 +121,8 @@ pub struct NetStats {
 #[derive(Debug)]
 pub enum UiEvent {
     Ready { peer_id: String, name: String },
+    /// A known (verified) profile, mine included.
+    Profile(crate::profile::Profile),
     Listening(String),
     Chat(ChatEvent),
     Peer { id: String, name: Option<String>, connected: bool },
@@ -620,6 +624,12 @@ async fn run(
     let mut global_addrs: HashSet<Multiaddr> = HashSet::new();
 
     let mut ticker = tokio::time::interval(Duration::from_secs(5));
+    // profiles: everyone's known, signed profiles (mine included)
+    let mut profiles: HashMap<String, crate::profile::Profile> = crate::profile::load_all().into_iter().filter(|p| p.verify()).map(|p| (p.peer.clone(), p)).collect();
+    for p in profiles.values() {
+        emit(&event_tx, UiEvent::Profile(p.clone()));
+    }
+    let mut profile_due = true;
 
     loop {
         tokio::select! {
@@ -722,6 +732,17 @@ async fn run(
                     Cmd::SetScan(on) => {
                         scan = on;
                         emit(&event_tx, UiEvent::Status(if on { "looking for new users".into() } else { "not looking for new users (known nodes and friends only)".into() }));
+                    }
+                    Cmd::SetProfile(mut p) => {
+                        let old_rev = profiles.get(&local_id).map(|o| o.rev).unwrap_or(0);
+                        p.rev = old_rev + 1;
+                        p.ts_ms = now_ms();
+                        p.name = name.clone();
+                        p.sign(&keypair);
+                        profiles.insert(local_id.clone(), p.clone());
+                        crate::profile::save_all(&profiles.values().cloned().collect::<Vec<_>>());
+                        emit(&event_tx, UiEvent::Profile(p.clone()));
+                        let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Profile(p).encode());
                     }
                     Cmd::SetStatus(st) => {
                         status = st;
@@ -849,6 +870,13 @@ async fn run(
 
             _ = ticker.tick() => {
                 tick_n += 1;
+                // re-announce my profile now and then (and soon after new peers connect)
+                if (profile_due || tick_n % 24 == 0) && !connected_peers.is_empty() {
+                    if let Some(p) = profiles.get(&local_id) {
+                        let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Profile(p.clone()).encode());
+                    }
+                    profile_due = false;
+                }
                 // History sync: for every room the user opened, ask each newly seen
                 // member of that room once (covers any order of connect/subscribe/open).
                 for ch in opened.iter() {
@@ -1180,6 +1208,7 @@ async fn run(
                         emit(&event_tx, UiEvent::Listening(with_p2p(&address, &local_peer).to_string()));
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, num_established, .. } => {
+                        profile_due = true;
                         conns += 1;
                         if endpoint.is_dialer() && !is_circuit(endpoint.get_remote_address()) {
                             dial_addr_of.insert(peer_id, endpoint.get_remote_address().clone());
@@ -1436,6 +1465,14 @@ async fn run(
                                     }
                                 }
                             }
+                            Wire::Profile(p) if th == control_hash => {
+                                let newer = profiles.get(&p.peer).map(|o| (p.rev, p.ts_ms) > (o.rev, o.ts_ms)).unwrap_or(true);
+                                if newer && p.peer != local_id && p.verify() {
+                                    profiles.insert(p.peer.clone(), p.clone());
+                                    crate::profile::save_all(&profiles.values().cloned().collect::<Vec<_>>());
+                                    emit(&event_tx, UiEvent::Profile(p));
+                                }
+                            }
                             Wire::Score(rec) if th == control_hash => {
                                 if rec.reachable {
                                     if let Some(pid) = parse_peer(&rec.peer) {
@@ -1477,7 +1514,7 @@ async fn run(
                                     }
                                 }
                             }
-                            Wire::Score(_) | Wire::Peers(_) => {}
+                            Wire::Score(_) | Wire::Peers(_) | Wire::Profile(_) => {}
                             Wire::BlobChunk { hash, idx, total, data, .. } => {
                                 if store::has_blob(&hash) || total == 0 || total > MAX_CHUNKS || idx >= total {
                                     continue;

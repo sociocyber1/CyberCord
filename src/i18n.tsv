@@ -508,3 +508,32 @@ intro_always	every time	каждый раз	щоразу	jedes Mal	siempre	à ch
 intro_first	first time only	только в первый раз	лише вперше	nur beim ersten Mal	solo la primera vez	la première fois	仅首次	初回のみ
 intro_never	never	никогда	ніколи	nie	nunca	jamais	从不	表示しない
 intro_watch	Watch now	Смотреть	Дивитися	Ansehen	Ver	Regarder	观看	今すぐ見る
+set_profile	Profile	Профиль	Профіль					
+profile_h	Profile	Профиль	Профіль					
+profile_none	This person has not filled in a profile yet.	Человек ещё не заполнил профиль.	Людина ще не заповнила профіль.					
+profile_job	Work	Кем работаю	Ким працюю					
+profile_job_hint	e.g. embedded engineer, teacher, designer	например, инженер встраиваемых систем, учитель, дизайнер	наприклад, інженер вбудованих систем, учитель, дизайнер					
+profile_tasks	Tasks I solve	Какие задачи решаю	Які задачі розв'язую					
+profile_tasks_hint	what you do and what you can help with	чем занимаетесь и с чем можете помочь	чим займаєтеся і з чим можете допомогти					
+profile_activity	Activity	Деятельность	Діяльність					
+profile_activity_hint	projects, communities, what you are working on now	проекты, сообщества, над чем работаете сейчас	проєкти, спільноти, над чим працюєте зараз					
+profile_skills	Skills (0–10 with a comment) — the index code is made from them	Навыки (0–10 и комментарий) — из них строится индекс-код	Навички (0–10 і коментар) — з них будується індекс-код					
+profile_skill_note	comment	комментарий	коментар					
+profile_skill_find	Find among 100 options or type your own	Найти среди 100 вариантов или ввести свой	Знайти серед 100 варіантів або ввести свій					
+profile_skill_own	+ add as my own	+ добавить свой	+ додати свій					
+profile_chip_tip	Click — skill, right click — interest	Клик — навык, правый клик — интерес	Клік — навичка, правий клік — інтерес					
+profile_catalog_note	Click a chip to add it as a skill, right-click to mark it as an interest.	Клик по варианту — добавить навык, правый клик — отметить как интерес.	Клік — додати навичку, правий клік — позначити як інтерес.					
+profile_interests	Interests	Области интересов	Сфери інтересів					
+profile_avatar	Choose avatar	Выбрать аватар	Вибрати аватар					
+profile_avatar_remove	Remove	Убрать	Прибрати					
+profile_code_empty	no code yet — add skills	кода пока нет — добавьте навыки	коду ще немає — додайте навички					
+profile_code_h	INDEX CODE, DECODED	ИНДЕКС-КОД, РАСШИФРОВКА	ІНДЕКС-КОД, РОЗШИФРОВКА					
+profile_save	Save profile	Сохранить профиль	Зберегти профіль					
+profile_saved	Profile saved — a new version, signed and sent to the network	Профиль сохранён — новая версия подписана и отправлена в сеть	Профіль збережено — нову версію підписано й надіслано в мережу					
+profile_show_codes	Show users' codes next to names	Показывать коды пользователей рядом с именами	Показувати коди користувачів поруч з іменами					
+profile_message	Add friend and write	Добавить в друзья и написать	Додати в друзі й написати					
+splash_opt	Logo screen at start (turn off to open faster)	Экран с логотипом при запуске (выключите, чтобы открывалось быстрее)	Екран з логотипом під час запуску (вимкніть, щоб відкривалося швидше)	Logo-Bildschirm beim Start (aus = schnellerer Start)	Pantalla con logo al iniciar (desactívala para abrir más rápido)	Écran du logo au démarrage (désactivez pour ouvrir plus vite)	启动时显示标志画面（关闭可更快打开）	起動時のロゴ画面（オフで速く起動）
+intro_watch_long	Watch the intro video	Смотреть интро-видео	Дивитися інтро-відео	Intro-Video ansehen	Ver el vídeo de introducción	Voir la vidéo d'intro	观看介绍视频	紹介動画を見る
+circle_sound_tap	tap for sound	нажмите — звук	натисніть — звук	tippen für Ton	toca para sonido	touchez pour le son	点击播放声音	タップで音声
+circle_no_sound	no sound	без звука	без звуку	ohne Ton	sin sonido	sans son	无声音	音声なし
+circle_mic_off	Microphone unavailable — this circle will be silent. Check Settings → Voice & sound.	Микрофон недоступен — кружок будет без звука. Проверьте Настройки → Голос и звук.	Мікрофон недоступний — кружечок буде без звуку. Перевірте Налаштування → Голос і звук.					

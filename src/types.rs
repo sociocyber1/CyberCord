@@ -329,6 +329,8 @@ pub enum Wire {
     Voice(VoiceFrame),
     /// Peer exchange: nodes this sender knows and how to reach them (control topic).
     Peers(Vec<PeerRec>),
+    /// A signed user profile (control topic).
+    Profile(crate::profile::Profile),
     /// One chunk of a media blob (channel / DM topic). `data` is base64.
     /// `round` differs between re-sends so gossip does not drop them as duplicates.
     BlobChunk { hash: String, idx: u32, total: u32, round: u64, data: String },

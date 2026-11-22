@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "cybercord-node"
-version = "0.15.1"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1637,6 +1637,7 @@ dependencies = [
  "notify-rust",
  "openh264",
  "rand 0.8.8",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_bytes",
@@ -1647,6 +1648,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

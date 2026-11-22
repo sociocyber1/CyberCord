@@ -103,11 +103,43 @@ pub fn start(st: TrayState, tx: Sender<TrayCmd>, ctx: egui::Context, icon_png: &
     }
 }
 
+/// The native window handle (Windows), so the tray can show a hidden window.
+#[cfg_attr(not(windows), allow(dead_code))]
+static HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+pub fn set_native_window(handle: &dyn raw_window_handle::HasWindowHandle) {
+    #[cfg(windows)]
+    if let Ok(h) = handle.window_handle() {
+        if let raw_window_handle::RawWindowHandle::Win32(w) = h.as_raw() {
+            HWND.store(w.hwnd.get(), std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = handle;
+}
+
+/// Bring the window back directly through Win32: while it is hidden, eframe
+/// runs no frames, so it would never see the viewport commands.
+#[cfg(windows)]
+fn show_native() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW};
+    let h = HWND.load(std::sync::atomic::Ordering::SeqCst);
+    if h != 0 {
+        unsafe {
+            ShowWindow(h as _, SW_SHOW);
+            ShowWindow(h as _, SW_RESTORE);
+            SetForegroundWindow(h as _);
+        }
+    }
+}
+
 fn send(tx: &Sender<TrayCmd>, ctx: &egui::Context, cmd: TrayCmd) {
     let _ = tx.send(cmd.clone());
     // Act right away even while the window is hidden (no frames are drawn then).
     match cmd {
         TrayCmd::Open => {
+            #[cfg(windows)]
+            show_native();
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);

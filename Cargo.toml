@@ -1,6 +1,6 @@
 [package]
 name = "cybercord-node"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 description = "CyberCord — serverless peer-to-peer chat (SocioCyberneering Inc.)"
 license = "MIT OR Apache-2.0"
@@ -42,6 +42,7 @@ image = { version = "0.25", default-features = false, features = ["gif", "png", 
 # Music messages: pure-Rust decoding of mp3 / flac / ogg-vorbis / wav / m4a-aac.
 mainline = "8"
 hayro = "0.9"
+raw-window-handle = "0.6"
 openh264 = "0.9"
 mp4 = "0.14"
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
@@ -72,3 +73,6 @@ ksni = { version = "0.3", features = ["blocking"] }
 
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.21"
+# show the hidden window from the tray (a hidden window gets no frames, so
+# egui viewport commands alone cannot bring it back)
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

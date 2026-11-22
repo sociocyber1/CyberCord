@@ -316,6 +316,12 @@ pub struct Settings {
     pub intro_mode: String,
     #[serde(default)]
     pub intro_seen: bool,
+    /// Show users' index codes next to their names.
+    #[serde(default = "yes")]
+    pub show_codes: bool,
+    /// Splash with the logo at start (off = faster start).
+    #[serde(default = "yes")]
+    pub splash: bool,
 }
 
 fn hundred() -> f32 {

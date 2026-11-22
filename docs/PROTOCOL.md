@@ -67,6 +67,7 @@ CyberCord **не перебирает IP-адреса в интернете**. �
 | `SyncReq` | `channel, since_ms, nonce` | «пришлите, что было после…» (ответ — до 50 сообщений) |
 | `Score` | `peer, name, score, ts_ms, reachable, voice?, listed, status` | пульс раз в 5 с: выбор хаба, присутствие, кто в каком голосовом канале, каталог имён |
 | `Peers` | список `PeerRec {peer, addrs, last_seen_ms}` | обмен списками нод |
+| `Profile` | `peer, name, avatar?, interests, activity, skills [{id, level, note}], job, tasks, rev, ts_ms, sig` | профиль, подписанный владельцем (тема управления; при изменении, при новых соединениях и раз в 2 минуты) |
 | `Voice` | `room, name, seq, pcm` | 20 мс голоса, 48 кГц моно i16 |
 | `BlobChunk` | `hash, idx, total, round, data(base64)` | кусок файла (192 КБ) |
 | `BlobReq` | `hash, nonce` | «у кого есть этот медиафайл?» (GIF, картинки, кружки, музыка ≤ 16 МБ) |

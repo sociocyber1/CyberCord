@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.16</h1>
+<h1 align="center">CyberCord 0.17</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -96,6 +96,34 @@ CyberCord похож на Discord, но у него нет центрально�
 - [Концепция (PDF)](docs/concept/cybercord-concept.pdf) — исходный документ
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
+
+## Что нового в 0.17
+
+- **Профиль и индекс-код.** Настройки → Профиль: аватар, кем работаете,
+  какие задачи решаете, деятельность, **навыки по шкале 0–10 с
+  комментарием** и области интересов — из **каталога в 100 вариантов**
+  (науки, общая семантика, SocioCyberneering, инженерия, программирование,
+  дизайн, люди и организация) или свои.
+  - Из навыков строится компактный **индекс-код**: три сильнейших навыка с
+    уровнями и сколько ещё, например `Rs8·El7·GS6+1`. Он стоит рядом с именем
+    в чате и в списке участников: `Alice [Rs8·El7·GS6+1]`.
+  - Клик по имени — профиль с **расшифровкой кода** (шкалы и комментарии),
+    интересами, работой и задачами; версия и дата профиля — как в общей
+    семантике: в₃ · 22.11.
+  - Профиль подписан ключом владельца и расходится по сети без сервера.
+    Коды можно скрыть: Настройки → Профиль.
+- **Исправлено на Windows:** из трея снова открывается окно и работает
+  «Выход» (скрытое окно не получает кадров, теперь трей показывает его
+  напрямую, а выход завершает программу через 1,5 с после остановки ноды).
+- **Кружки:** на кружке написано «нажмите — звук» (автоповтор идёт без звука,
+  как в Telegram) или «без звука», если микрофон не записался; при записи без
+  микрофона — предупреждение. Микрофон теперь работает и с форматами
+  I32/U16.
+- **Интро-видео показывается один раз;** посмотреть снова — Настройки →
+  О программе или Внешний вид. **Экран с логотипом можно выключить** для
+  быстрого запуска.
+
+![Профиль с расшифровкой индекс-кода](docs/img/screen-profile.png)
 
 ## Что нового в 0.16
 
@@ -432,12 +460,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.16.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.17.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.16.0-linux-x86_64.tar.gz
-cd cybercord-0.16.0-linux-x86_64
+tar xf cybercord-0.17.0-linux-x86_64.tar.gz
+cd cybercord-0.17.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -643,6 +671,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.17:** profiles (avatar, work, tasks, activity, skills 0–10 with comments, interests from a 100-item catalog), a compact index code next to names (`Alice [Rs8·El7·GS6+1]`) decoded in the profile view, signed and spread without servers; Windows tray Open/Quit fixed; clearer circle sound hints; the intro plays once; the logo screen can be turned off.
 
 **0.16:** an intro video plays at start inside the app (OpenH264 + built-in audio; skip with the button, Esc, Space or Enter; "every time / first time / never" in Settings → Appearance), followed by a splash with the CyberCord planet and the motto in the Montserrat brand font.
 

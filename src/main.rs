@@ -140,6 +140,7 @@ commands:
   /devices                       list microphones and speakers
   /find <name>                   search people by name (or ID start)
   /share <path>                  share a file of any size in the open channel (torrent-like)
+  /profile Rs8 El7 GS6            set my skills (catalog code + level 0–10) and publish the profile
   /edit <text>                   edit my last message in the open channel
   /del                           delete my last message in the open channel
   /get [name]                    download a file posted in the open channel (waits if nobody has it online)
@@ -196,6 +197,7 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
                     a2.lock().unwrap().push(a);
                 }
                 UiEvent::Status(s) => println!("· {s}"),
+                UiEvent::Profile(p) => println!("· profile {} [{}] v{}", p.name, p.code(), p.rev),
                 UiEvent::Chat(e) => {
                     let room = if e.channel.is_dm() { "DM".to_string() } else { format!("{}/{}", e.channel.guild, e.channel.channel) };
                     let media = e.attach.as_ref().map(|a| format!(" [{:?} {} {} KB {}…]", a.kind, a.name, a.size / 1024, &a.hash[..12])).unwrap_or_default();
@@ -413,6 +415,14 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
                 }
                 "stop" => {
                     player = None;
+                }
+                "profile" => {
+                    // /profile Rs8 El7 GS6 — set skills (catalog code + level) and publish
+                    let skills = arg.split_whitespace().filter_map(|t| {
+                        let i = t.find(|c: char| c.is_ascii_digit())?;
+                        Some(cybercord_node::profile::Skill { id: t[..i].to_string(), level: t[i..].parse().ok()?, note: String::new() })
+                    }).collect();
+                    let _ = handle.cmd_tx.send(Cmd::SetProfile(cybercord_node::profile::Profile { skills, ..Default::default() }));
                 }
                 "edit" | "del" => {
                     let me = my_id.lock().unwrap().clone();

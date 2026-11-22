@@ -13,6 +13,7 @@ use eframe::egui::{self, load::SizedTexture, Align2, Color32, Id, LayerId, Order
 use cybercord_node::net::{self, Cmd, NetConfig, NetStats, NetworkHandle, UiEvent, MAX_BLOB};
 use cybercord_node::servers::SERVERS;
 use cybercord_node::store::{self, Settings};
+use cybercord_node::profile::{self as prof, Profile, Skill};
 use cybercord_node::semantics::{self as sem, Kind, Level};
 use cybercord_node::types::{clock, now_ms, short_date, subscript, parse_connect_code, Attachment, ChannelId, ChatEvent, Friend, MediaKind};
 use cybercord_node::voice;
@@ -244,6 +245,13 @@ pub struct CyberApp {
     block_ed: Option<BlockEd>,
     /// start-up: intro video, then the splash (planet + motto)
     intro: Option<crate::intro::Intro>,
+    /// signed profiles by peer id; whose profile is open; my profile draft
+    profiles: HashMap<String, Profile>,
+    profile_view: Option<String>,
+    profile_draft: Option<Profile>,
+    skill_query: String,
+    avatar_tex: HashMap<String, (u32, egui::TextureHandle)>,
+    avatar_rx: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
     splash: Option<Instant>,
     preview_h: f32,
     /// picked image file from the system dialog (runs on its own thread)
@@ -253,6 +261,7 @@ pub struct CyberApp {
 
 impl CyberApp {
     pub fn new(cc: &eframe::CreationContext<'_>, cfg: NetConfig) -> Self {
+        crate::tray::set_native_window(cc);
         let settings = store::load_settings();
         theme::set(&settings.theme);
         install_theme(&cc.egui_ctx);
@@ -370,6 +379,12 @@ impl CyberApp {
             math_mode: false,
             block_ed: None,
             intro: None,
+            profiles: HashMap::new(),
+            profile_view: None,
+            profile_draft: None,
+            skill_query: String::new(),
+            avatar_tex: HashMap::new(),
+            avatar_rx: None,
             splash: None,
             preview_h: 0.0,
             pick_rx: None,
@@ -408,6 +423,10 @@ impl CyberApp {
                     }
                     p if p.starts_with("doc:") => self.doc_open = Doc::from_id(&p[4..]),
                     p if p.starts_with("pdf:") => self.open_builtin_pdf(if &p[4..] == "gs" { "general-semantics.pdf" } else { "venus-project.pdf" }),
+                    "proftab" => {
+                        self.show_settings = true;
+                        self.set_tab = SetTab::Profile;
+                    }
                     "wordstab" => {
                         self.show_settings = true;
                         self.set_tab = SetTab::Help;
@@ -514,6 +533,9 @@ impl CyberApp {
     fn drain_events(&mut self) {
         while let Ok(ev) = self.handle.event_rx.try_recv() {
             match ev {
+                UiEvent::Profile(p) => {
+                    self.profiles.insert(p.peer.clone(), p);
+                }
                 UiEvent::Ready { peer_id, name } => {
                     self.self_id = peer_id;
                     self.self_name = name;
@@ -1247,6 +1269,7 @@ impl eframe::App for CyberApp {
         self.doc_overlay(ctx);
         self.analyze_overlay(ctx);
         self.block_editor(ctx);
+        self.profile_window(ctx);
         self.pdf_overlay(ctx);
         self.draw_toast(ctx);
         self.draw_tour(ctx);
@@ -1490,7 +1513,15 @@ impl CyberApp {
                 let me = format!("{} {}", self.self_name, self.t("you"));
                 let my_role = self.role_of(&self.self_id);
                 let spk = self.icons.get(ui.ctx(), "speaker", SYM_SPEAKER);
-                member_row(ui, &me, my_role, true, false, self.in_voice.is_some().then_some(spk));
+                if member_row(ui, &me, my_role, true, false, self.in_voice.is_some().then_some(spk)).clicked() {
+                    self.profile_view = Some(self.self_id.clone());
+                }
+                if let Some(code) = self.user_code(&self.self_id.clone()) {
+                    ui.horizontal(|ui| {
+                        ui.add_space(38.0);
+                        ui.label(RichText::new(code).color(th().ink2).size(10.5).monospace());
+                    });
+                }
                 let rows: Vec<(String, Option<&'static str>, bool, bool, bool)> = self
                     .peers
                     .iter()
@@ -1506,7 +1537,16 @@ impl CyberApp {
                 for ((name, role, conn, talking, in_voice), id) in rows.into_iter().zip(ids) {
                     let st = self.status_of(&id);
                     let conn = conn && st != "offline";
-                    member_row(ui, &name, role, conn, talking, in_voice.then_some(spk));
+                    let row = member_row(ui, &name, role, conn, talking, in_voice.then_some(spk));
+                    if let Some(code) = self.user_code(&id) {
+                        ui.horizontal(|ui| {
+                            ui.add_space(38.0);
+                            ui.label(RichText::new(code).color(th().ink2).size(10.5).monospace());
+                        });
+                    }
+                    if row.clicked() {
+                        self.profile_view = Some(id.clone());
+                    }
                     if conn && !st.is_empty() && st != "online" {
                         ui.horizontal(|ui| {
                             ui.add_space(38.0);
@@ -1876,7 +1916,13 @@ impl CyberApp {
                 ui.horizontal(|ui| {
                     ui.set_min_height(22.0);
                     ui.colored_label(th().ink2, RichText::new(clock(m.ts_ms)).small());
-                    ui.label(RichText::new(&m.name).color(if mine { th().accent } else { th().ink }).b());
+                    let nresp = ui.add(egui::Label::new(RichText::new(&m.name).color(if mine { th().accent } else { th().ink }).b()).sense(egui::Sense::click()));
+                    if let Some(code) = self.user_code(&m.from) {
+                        ui.label(RichText::new(format!("[{code}]")).color(th().ink2).size(10.5).monospace());
+                    }
+                    if nresp.clicked() && !m.from.is_empty() {
+                        self.profile_view = Some(m.from.clone());
+                    }
                     if r.rev > 1 {
                         // dated and indexed, as in general semantics: message₂ (date)
                         let mark = format!("{}{} · {}", self.t("edited_mark"), subscript(r.rev), short_date(r.ts_ms));
@@ -2198,6 +2244,265 @@ impl CyberApp {
                 st.store(ctx, id);
             }
         }
+    }
+
+    /// A user's index code, if they have one and codes are shown.
+    fn user_code(&self, peer: &str) -> Option<String> {
+        if !self.settings.show_codes || peer.is_empty() {
+            return None;
+        }
+        self.profiles.get(peer).map(|p| p.code()).filter(|c| !c.is_empty())
+    }
+
+    fn avatar_texture(&mut self, ctx: &egui::Context, p: &Profile) -> Option<egui::TextureId> {
+        use base64::Engine;
+        if p.avatar.is_empty() {
+            return None;
+        }
+        if let Some((rev, t)) = self.avatar_tex.get(&p.peer) {
+            if *rev == p.rev {
+                return Some(t.id());
+            }
+        }
+        let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(&p.avatar).ok()?;
+        let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let ci = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+        let t = ctx.load_texture(format!("av-{}", p.peer), ci, egui::TextureOptions::LINEAR);
+        let id = t.id();
+        self.avatar_tex.insert(p.peer.clone(), (p.rev, t));
+        Some(id)
+    }
+
+    /// Someone's profile with the index code decoded.
+    fn profile_window(&mut self, ctx: &egui::Context) {
+        let Some(peer) = self.profile_view.clone() else { return };
+        let c = th();
+        let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+        let p = self.profiles.get(&peer).cloned();
+        let name = p.as_ref().map(|p| p.name.clone()).or_else(|| self.peers.get(&peer).and_then(|v| v.name.clone())).unwrap_or_else(|| short(&peer));
+        let mut open = true;
+        egui::Window::new(self.t("profile_h")).collapsible(false).resizable(false).open(&mut open).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).default_width(460.0).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.horizontal(|ui| {
+                let tex = p.as_ref().and_then(|p| self.avatar_texture(ui.ctx(), p));
+                match tex {
+                    Some(t) => {
+                        ui.add(egui::Image::new(SizedTexture::new(t, egui::vec2(72.0, 72.0))).rounding(Rounding::same(36.0)));
+                    }
+                    None => avatar(ui, &name.chars().next().unwrap_or('?').to_uppercase().to_string(), 36.0, name_color(&name), None),
+                }
+                ui.vertical(|ui| {
+                    // name, version index and date — the person is indexed and dated too
+                    let idx = p.as_ref().map(|p| format!("{}{}", self.t("version_n"), subscript(p.rev.max(1)))).unwrap_or_default();
+                    ui.label(RichText::new(&name).color(c.ink).b().size(19.0));
+                    if let Some(p) = &p {
+                        ui.label(RichText::new(format!("{idx} · {}", short_date(p.ts_ms))).color(c.ink2).small());
+                        let code = p.code();
+                        if !code.is_empty() {
+                            ui.label(RichText::new(format!("[{code}]")).color(c.accent).monospace());
+                        }
+                    }
+                    ui.label(RichText::new(short(&peer)).color(c.ink2).small().monospace());
+                });
+            });
+            let Some(p) = p else {
+                ui.add_space(8.0);
+                ui.colored_label(c.ink2, self.t("profile_none"));
+                return;
+            };
+            if !p.job.is_empty() || !p.tasks.is_empty() {
+                ui.add_space(8.0);
+                if !p.job.is_empty() {
+                    ui.label(RichText::new(format!("{}: {}", self.t("profile_job"), p.job)).color(c.ink));
+                }
+                if !p.tasks.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(format!("{}: {}", self.t("profile_tasks"), p.tasks)).color(c.ink)).wrap());
+                }
+            }
+            if !p.skills.is_empty() {
+                ui.add_space(8.0);
+                ui.label(RichText::new(self.t("profile_code_h")).color(c.ink2).small().b());
+                for k in p.top_skills() {
+                    let s = crate::blocks::Scale { title: format!("{} · {}", prof::short_code(&k.id), prof::name(&k.id, ru)), value: k.level as f64, max: 10.0, note: k.note.clone() };
+                    crate::blocks::draw_scale(ui, &s, c.ink, c.ink2, c.accent, c.line);
+                    ui.add_space(4.0);
+                }
+            }
+            if !p.interests.is_empty() {
+                ui.add_space(6.0);
+                ui.label(RichText::new(self.t("profile_interests")).color(c.ink2).small().b());
+                ui.horizontal_wrapped(|ui| {
+                    for i in &p.interests {
+                        egui::Frame::none().fill(c.card).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::symmetric(8.0, 3.0)).show(ui, |ui| {
+                            ui.label(RichText::new(prof::name(i, ru)).color(c.ink).small());
+                        });
+                    }
+                });
+            }
+            if !p.activity.is_empty() {
+                ui.add_space(6.0);
+                ui.label(RichText::new(self.t("profile_activity")).color(c.ink2).small().b());
+                ui.add(egui::Label::new(RichText::new(&p.activity).color(c.ink)).wrap());
+            }
+            if peer != self.self_id && ui.button(self.t("profile_message")).clicked() {
+                self.befriend(&peer, &name, true);
+                self.profile_view = None;
+            }
+        });
+        if !open {
+            self.profile_view = None;
+        }
+    }
+
+    /// Settings → Profile: edit my profile; the code is built from the skills.
+    fn tab_profile(&mut self, ui: &mut egui::Ui) {
+        use base64::Engine;
+        let c = th();
+        let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+        if self.profile_draft.is_none() {
+            self.profile_draft = Some(self.profiles.get(&self.self_id).cloned().unwrap_or_default());
+        }
+        // a picked avatar arrives from the file dialog thread
+        if let Some(rx) = &self.avatar_rx {
+            if let Ok(r) = rx.try_recv() {
+                self.avatar_rx = None;
+                if let Some(path) = r {
+                    if let Some(b64) = std::fs::read(&path).ok().and_then(|b| image::load_from_memory(&b).ok()).map(|img| {
+                        let img = img.resize_to_fill(128, 128, image::imageops::FilterType::Lanczos3).to_rgb8();
+                        let mut out = Vec::new();
+                        let _ = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85).encode_image(&img);
+                        base64::engine::general_purpose::STANDARD_NO_PAD.encode(out)
+                    }) {
+                        if let Some(d) = self.profile_draft.as_mut() {
+                            d.avatar = b64;
+                            d.rev = d.rev.wrapping_add(1000); // new texture
+                        }
+                    }
+                }
+            }
+        }
+        let mut d = self.profile_draft.take().unwrap_or_default();
+        d.peer = self.self_id.clone();
+        d.name = self.self_name.clone();
+        ui.horizontal(|ui| {
+            match self.avatar_texture(ui.ctx(), &d) {
+                Some(t) => {
+                    ui.add(egui::Image::new(SizedTexture::new(t, egui::vec2(72.0, 72.0))).rounding(Rounding::same(36.0)));
+                }
+                None => avatar(ui, &self.self_name.chars().next().unwrap_or('?').to_uppercase().to_string(), 36.0, c.accent, None),
+            }
+            ui.vertical(|ui| {
+                ui.label(RichText::new(&self.self_name).color(c.ink).b().size(18.0));
+                let code = d.code();
+                ui.label(RichText::new(if code.is_empty() { self.t("profile_code_empty").to_string() } else { format!("[{code}]") }).color(c.accent).monospace());
+                ui.horizontal(|ui| {
+                    if ui.button(self.t("profile_avatar")).clicked() && self.avatar_rx.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        self.avatar_rx = Some(rx);
+                        let ctx = ui.ctx().clone();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(rfd::FileDialog::new().add_filter("images", &["png", "jpg", "jpeg", "webp", "bmp", "gif"]).pick_file());
+                            ctx.request_repaint();
+                        });
+                    }
+                    if !d.avatar.is_empty() && ui.button(self.t("profile_avatar_remove")).clicked() {
+                        d.avatar.clear();
+                    }
+                });
+            });
+        });
+        ui.add_space(12.0);
+        egui::Grid::new("prof_grid").num_columns(2).spacing(egui::vec2(12.0, 8.0)).show(ui, |ui| {
+            ui.label(self.t("profile_job"));
+            ui.add(egui::TextEdit::singleline(&mut d.job).hint_text(self.t("profile_job_hint")).desired_width(420.0));
+            ui.end_row();
+            ui.label(self.t("profile_tasks"));
+            ui.add(egui::TextEdit::multiline(&mut d.tasks).hint_text(self.t("profile_tasks_hint")).desired_rows(2).desired_width(420.0));
+            ui.end_row();
+            ui.label(self.t("profile_activity"));
+            ui.add(egui::TextEdit::multiline(&mut d.activity).hint_text(self.t("profile_activity_hint")).desired_rows(2).desired_width(420.0));
+            ui.end_row();
+        });
+        // skills: 0–10 with a comment
+        ui.add_space(12.0);
+        ui.label(RichText::new(self.t("profile_skills").to_uppercase()).color(c.ink2).size(12.0).b());
+        let mut remove: Option<usize> = None;
+        for (k, sk) in d.skills.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{} · {}", prof::short_code(&sk.id), prof::name(&sk.id, ru))).color(c.ink).b());
+                ui.add(egui::Slider::new(&mut sk.level, 0..=10));
+                ui.add(egui::TextEdit::singleline(&mut sk.note).hint_text(self.t("profile_skill_note")).desired_width(200.0));
+                if ui.small_button("×").clicked() {
+                    remove = Some(k);
+                }
+            });
+        }
+        if let Some(k) = remove {
+            d.skills.remove(k);
+        }
+        ui.horizontal(|ui| {
+            let hint = self.t("profile_skill_find");
+            ui.add(egui::TextEdit::singleline(&mut self.skill_query).hint_text(hint).desired_width(260.0));
+            let q = self.skill_query.trim().to_lowercase();
+            if !q.is_empty() && !prof::CATALOG.iter().any(|e| e.ru.to_lowercase() == q || e.en.to_lowercase() == q) && ui.button(self.t("profile_skill_own")).clicked() {
+                d.skills.push(Skill { id: self.skill_query.trim().to_string(), level: 5, note: String::new() });
+                self.skill_query.clear();
+            }
+        });
+        let q = self.skill_query.trim().to_lowercase();
+        // the catalog: 100 options in districts; click to add as a skill
+        egui::ScrollArea::vertical().id_salt("catalog").max_height(220.0).show(ui, |ui| {
+            for (g, gru, gen) in prof::GROUPS {
+                let items: Vec<&prof::Entry> = prof::CATALOG.iter().filter(|e| e.group == *g && (q.is_empty() || e.ru.to_lowercase().contains(&q) || e.en.to_lowercase().contains(&q) || e.code.to_lowercase() == q)).collect();
+                if items.is_empty() {
+                    continue;
+                }
+                ui.label(RichText::new(if ru { *gru } else { *gen }).color(c.ink2).small().b());
+                ui.horizontal_wrapped(|ui| {
+                    for e in items {
+                        let has_skill = d.skills.iter().any(|s| s.id == e.code);
+                        let has_int = d.interests.iter().any(|s| s == e.code);
+                        let label = format!("{} {}", e.code, if ru { e.ru } else { e.en });
+                        let r = ui.add(egui::Button::new(RichText::new(label).small().color(if has_skill { c.on_accent } else { c.ink })).fill(if has_skill { c.accent } else if has_int { c.sel } else { c.card }).rounding(Rounding::same(10.0)));
+                        if r.clicked() {
+                            if has_skill {
+                                d.skills.retain(|s| s.id != e.code);
+                            } else {
+                                d.skills.push(Skill { id: e.code.to_string(), level: 5, note: String::new() });
+                            }
+                        }
+                        if r.secondary_clicked() {
+                            if has_int {
+                                d.interests.retain(|s| s != e.code);
+                            } else {
+                                d.interests.push(e.code.to_string());
+                            }
+                        }
+                        r.on_hover_text(self.t("profile_chip_tip"));
+                    }
+                });
+            }
+        });
+        ui.add_space(4.0);
+        ui.colored_label(c.ink2, RichText::new(self.t("profile_catalog_note")).small());
+        if !d.interests.is_empty() {
+            ui.label(RichText::new(format!("{}: {}", self.t("profile_interests"), d.interests.iter().map(|i| prof::name(i, ru)).collect::<Vec<_>>().join(", "))).color(c.ink).small());
+        }
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if ui.add(egui::Button::new(RichText::new(self.t("profile_save")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(160.0, 34.0))).clicked() {
+                let mut p = d.clone();
+                p.rev = self.profiles.get(&self.self_id).map(|o| o.rev).unwrap_or(0);
+                let _ = self.handle.cmd_tx.send(Cmd::SetProfile(p));
+                let m = self.t("profile_saved").to_string();
+                self.toast(m);
+            }
+            let label = self.t("profile_show_codes");
+            if ui.checkbox(&mut self.settings.show_codes, label).changed() {
+                store::save_settings(&self.settings);
+            }
+        });
+        self.profile_draft = Some(d);
     }
 
     /// The scale / chart editor: fields on the left, live preview, insert or save.
@@ -2733,8 +3038,17 @@ impl CyberApp {
         media::paint_circle(p, c, 98.0, frames[idx], false);
         media::progress_ring(p, c, 101.0, (pos / dur) as f32, if playing.is_some() { th().accent } else { th().on_accent.gamma_multiply(0.85) }, 3.0);
         let secs = (dur - pos).max(0.0) as u32;
-        let label = format!("{}:{:02}{}", secs / 60, secs % 60, if playing.is_some() { "  🔊" } else { "" });
-        let lr = Rect::from_center_size(c + egui::vec2(0.0, 76.0), egui::vec2(64.0, 20.0));
+        // say plainly whether there is sound and how to hear it (autoplay is muted)
+        let hint = if playing.is_some() {
+            "  🔊".to_string()
+        } else if audio.is_some() {
+            format!(" · {}", self.t("circle_sound_tap"))
+        } else {
+            format!(" · {}", self.t("circle_no_sound"))
+        };
+        let label = format!("{}:{:02}{hint}", secs / 60, secs % 60);
+        let lw = ui.fonts(|f| f.layout_no_wrap(label.clone(), egui::FontId::proportional(12.0), Color32::WHITE).size().x) + 16.0;
+        let lr = Rect::from_center_size(c + egui::vec2(0.0, 76.0), egui::vec2(lw.max(64.0), 20.0));
         p.rect_filled(lr, Rounding::same(10.0), Color32::from_black_alpha(110));
         p.text(lr.center(), Align2::CENTER_CENTER, label, egui::FontId::proportional(12.0), th().on_accent);
         let resp = resp.on_hover_text(self.t("circle_tap"));
@@ -2936,6 +3250,10 @@ impl CyberApp {
         }
         self.rec = Some(camera::Recorder::start());
         self.rec_tex = None;
+        if voice::AUDIO_ENABLED && !self.rec.as_ref().map(|r| r.has_sound()).unwrap_or(true) {
+            let m = self.t("circle_mic_off").to_string();
+            self.toast(m);
+        }
     }
 
     fn recorder_overlay(&mut self, ctx: &egui::Context) {
@@ -3117,8 +3435,8 @@ fn bullet(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
 }
 
-fn member_row(ui: &mut egui::Ui, name: &str, role: Option<&str>, connected: bool, talking: bool, voice_icon: Option<egui::TextureId>) {
-    ui.horizontal(|ui| {
+fn member_row(ui: &mut egui::Ui, name: &str, role: Option<&str>, connected: bool, talking: bool, voice_icon: Option<egui::TextureId>) -> egui::Response {
+    let r = ui.horizontal(|ui| {
         let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
         let col = if connected { name_color(name) } else { th().line };
         avatar(ui, &initial, 13.0, col, if talking { Some(th().green) } else { None });
@@ -3130,6 +3448,8 @@ fn member_row(ui: &mut egui::Ui, name: &str, role: Option<&str>, connected: bool
             ui.label(RichText::new(r).color(th().accent).small().b());
         }
     });
+    // over the labels (which take clicks for text selection), so the row opens the profile
+    ui.interact(r.response.rect, egui::Id::new(("member_row", name)), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 // ---- icons (GNOME-style tiles + symbolic icons, pre-rendered from SVG) ----
@@ -3797,6 +4117,7 @@ impl CyberApp {
 
 #[derive(Clone, Copy, PartialEq)]
 enum SetTab {
+    Profile,
     Appearance,
     Voice,
     Language,
@@ -3817,7 +4138,8 @@ impl CyberApp {
         if k < 1.0 {
             ctx.request_repaint();
         }
-        let tabs: [(SetTab, &'static str); 7] = [
+        let tabs: [(SetTab, &'static str); 8] = [
+            (SetTab::Profile, "set_profile"),
             (SetTab::Appearance, "set_appearance"),
             (SetTab::Voice, "set_voice"),
             (SetTab::Language, "language"),
@@ -3898,6 +4220,7 @@ impl CyberApp {
                         SetTab::Help => self.tab_help(ui),
                         SetTab::About => self.tab_about(ui),
                         SetTab::Background => self.tab_background(ui),
+                        SetTab::Profile => self.tab_profile(ui),
                         SetTab::Privacy => {
                             let label = self.t("listed_opt");
                             if ui.checkbox(&mut self.settings.listed, label).changed() {
@@ -3936,7 +4259,7 @@ impl CyberApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.label(self.t("intro_opt"));
-            let cur = if self.settings.intro_mode.is_empty() { "always".to_string() } else { self.settings.intro_mode.clone() };
+            let cur = if self.settings.intro_mode.is_empty() { "first".to_string() } else { self.settings.intro_mode.clone() };
             for (id, key) in [("always", "intro_always"), ("first", "intro_first"), ("never", "intro_never")] {
                 if ui.selectable_label(cur == id, self.t(key)).clicked() {
                     self.settings.intro_mode = id.into();
@@ -3948,6 +4271,10 @@ impl CyberApp {
                 self.show_settings = false;
             }
         });
+        let label = self.t("splash_opt");
+        if ui.checkbox(&mut self.settings.splash, label).changed() {
+            store::save_settings(&self.settings);
+        }
         ui.add_space(14.0);
         ui.label(RichText::new(self.t("theme_h").to_uppercase()).color(c.ink2).size(12.0).b());
         ui.add_space(8.0);
@@ -4044,6 +4371,10 @@ impl CyberApp {
         ui.horizontal_wrapped(|ui| {
             if ui.add(egui::Button::new(RichText::new(self.t("sce_doc")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(220.0, 34.0))).clicked() {
                 self.doc_open = Some(Doc::Sce);
+            }
+            if ui.add(egui::Button::new(RichText::new(self.t("intro_watch_long")).color(c.ink)).fill(c.card).rounding(Rounding::same(8.0)).min_size(egui::vec2(0.0, 34.0))).clicked() {
+                self.intro = crate::intro::Intro::start();
+                self.show_settings = false;
             }
             for (key, file) in [("pdf_venus", "venus-project.pdf"), ("pdf_gs", "general-semantics.pdf")] {
                 if ui.add(egui::Button::new(RichText::new(format!("PDF · {}", self.t(key))).color(c.ink)).fill(c.card).rounding(Rounding::same(8.0)).min_size(egui::vec2(0.0, 34.0))).clicked() {
@@ -4779,6 +5110,13 @@ fn spawn_tray_router(
                     TrayCmd::Quit => {
                         quitting.store(true, std::sync::atomic::Ordering::SeqCst);
                         let _ = net.send(Cmd::Quit);
+                        // A hidden window runs no frames (Windows), so the normal close may
+                        // never happen: give the node a moment to finish, then exit. All data
+                        // is already on disk (messages are appended as they arrive).
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_millis(1500));
+                            std::process::exit(0);
+                        });
                     }
                     TrayCmd::Open => {}
                 }
@@ -4829,11 +5167,12 @@ fn status_color(id: &str) -> Option<Color32> {
 impl CyberApp {
     fn started_hidden(mut self, hidden: bool) -> Self {
         let mode = self.settings.intro_mode.as_str();
-        let play = !hidden && std::env::var("CYBERCORD_START").is_err() && (mode.is_empty() || mode == "always" || (mode == "first" && !self.settings.intro_seen));
+        // the intro plays once by default; "always" / "never" in Settings → Appearance
+        let play = !hidden && std::env::var("CYBERCORD_START").is_err() && (mode == "always" || ((mode.is_empty() || mode == "first") && !self.settings.intro_seen));
         if play {
             self.intro = crate::intro::Intro::start();
         }
-        if !hidden && std::env::var("CYBERCORD_START").map(|v| !v.contains("nosplash")).unwrap_or(true) {
+        if !hidden && self.settings.splash && std::env::var("CYBERCORD_START").map(|v| !v.contains("nosplash")).unwrap_or(true) {
             self.splash = Some(Instant::now());
         }
         if std::env::var("CYBERCORD_START").map(|v| v.contains("intro")).unwrap_or(false) {
