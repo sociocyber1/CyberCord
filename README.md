@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.15</h1>
+<h1 align="center">CyberCord 0.15.1</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -96,6 +96,16 @@ CyberCord похож на Discord, но у него нет центрально�
 - [Концепция (PDF)](docs/concept/cybercord-concept.pdf) — исходный документ
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
+
+## Что нового в 0.15.1
+
+- **Названия каналов на всех 8 языках CyberCord** (русский, украинский,
+  английский, немецкий, испанский, французский, китайский, японский): все 77
+  текстовых и голосовых каналов. Меняется только отображение — сеть по-прежнему
+  встречается в тех же каналах; при наведении виден исходный `#slug`.
+  Отключается: Настройки → Язык.
+
+![Каналы на русском](docs/img/screen-channels-ru.png)
 
 ## Что нового в 0.15
 
@@ -408,12 +418,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.15.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.15.1-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.15.0-linux-x86_64.tar.gz
-cd cybercord-0.15.0-linux-x86_64
+tar xf cybercord-0.15.1-linux-x86_64.tar.gz
+cd cybercord-0.15.1-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 

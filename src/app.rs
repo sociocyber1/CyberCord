@@ -461,6 +461,15 @@ impl CyberApp {
         i18n::tr_dyn(self.lang, k)
     }
 
+    /// A channel's name in the interface language (the network id stays the slug).
+    fn ch_label(&self, slug: &str) -> String {
+        if !self.settings.ch_translate {
+            return slug.to_string();
+        }
+        let t = self.td(&format!("ch_{slug}"));
+        if t.is_empty() { slug.to_string() } else { t.to_string() }
+    }
+
     fn toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
     }
@@ -1292,7 +1301,8 @@ impl CyberApp {
                     let hash = self.icons.get(ui.ctx(), "hash", SYM_HASH);
                     for (i, c) in server.channels.iter().enumerate() {
                         let selected = !self.show_home && !self.show_friends && i == self.sel_channel;
-                        if channel_row(ui, hash, c, selected, false).clicked() {
+                        let label = self.ch_label(c);
+                        if channel_row(ui, hash, &label, selected, false).on_hover_text(format!("#{c}")).clicked() {
                             self.sel_channel = i;
                             self.show_home = false;
                         }
@@ -1305,7 +1315,8 @@ impl CyberApp {
                     for v in server.voice.iter() {
                         let room = format!("{}/{}", server.slug, v);
                         let mine = self.in_voice.as_deref() == Some(room.as_str());
-                        let r = channel_row(ui, spk, v, mine, true).on_hover_text(self.t("voice_join_tip"));
+                        let label = self.ch_label(v);
+                        let r = channel_row(ui, spk, &label, mine, true).on_hover_text(self.t("voice_join_tip"));
                         if r.clicked() && !mine {
                             let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::new(server.slug, *v) });
                         }
@@ -1721,7 +1732,7 @@ impl CyberApp {
             } else {
                 let hash = self.icons.get(ui.ctx(), "hash", SYM_HASH);
                 ui.add(egui::Image::new(SizedTexture::new(hash, egui::vec2(18.0, 18.0))).tint(th().ink2));
-                ui.label(RichText::new(ch.channel.as_str()).color(th().ink).b().size(17.0));
+                ui.label(RichText::new(self.ch_label(&ch.channel)).color(th().ink).b().size(17.0)).on_hover_text(format!("#{}", ch.channel));
                 ui.colored_label(th().ink2, format!("· {}", SERVERS[self.sel_server].name));
             }
         });
@@ -1965,7 +1976,7 @@ impl CyberApp {
             let hint = if ch.is_dm() {
                 self.t("message_dm").replace("{name}", &self.friend_name(&ch.channel))
             } else {
-                self.t("message_ch").replace("{ch}", &ch.channel)
+                self.t("message_ch").replace("{ch}", &self.ch_label(&ch.channel))
             };
             // Enter sends, Shift+Enter starts a new line
             let input_id = Id::new("composer_input");
@@ -3862,6 +3873,12 @@ impl CyberApp {
     }
 
     fn tab_language(&mut self, ui: &mut egui::Ui) {
+        let label = self.t("ch_translate_opt");
+        if ui.checkbox(&mut self.settings.ch_translate, label).changed() {
+            store::save_settings(&self.settings);
+        }
+        ui.colored_label(th().ink2, RichText::new(self.t("ch_translate_note")).small());
+        ui.add_space(14.0);
         let sys = i18n::system();
         let auto_label = self.t("lang_auto").replace("{lang}", sys.native());
         let current = if self.settings.lang.is_empty() || self.settings.lang == "auto" { auto_label.clone() } else { self.lang.native().to_string() };
@@ -4589,7 +4606,10 @@ fn spawn_event_pump(rx: std::sync::mpsc::Receiver<UiEvent>, tx: std::sync::mpsc:
                     if enabled && !active && fresh && m.edits.is_none() && m.name != me && seen.insert(m.id.clone()) {
                         let mention = me.chars().count() >= 2 && m.body.to_lowercase().contains(&me.to_lowercase());
                         if m.channel.is_dm() || mention {
-                            let title = if m.channel.is_dm() { m.name.clone() } else { format!("{} · #{}", m.name, m.channel.channel) };
+                            let title = if m.channel.is_dm() { m.name.clone() } else { {
+                                let t = i18n::tr_dyn(lang, &format!("ch_{}", m.channel.channel));
+                                format!("{} · #{}", m.name, if t.is_empty() { m.channel.channel.as_str() } else { t })
+                            } };
                             let mut body: String = emoji::shortcodes_to_unicode(&m.body).chars().take(160).collect();
                             if body.is_empty() && m.attach.is_some() {
                                 body = "📎".into();

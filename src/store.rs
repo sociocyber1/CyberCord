@@ -308,6 +308,9 @@ pub struct Settings {
     /// "Hacked text" animation for new messages (and the brand on start).
     #[serde(default = "yes")]
     pub hack_fx: bool,
+    /// Show channel names in the interface language.
+    #[serde(default = "yes")]
+    pub ch_translate: bool,
 }
 
 fn hundred() -> f32 {
