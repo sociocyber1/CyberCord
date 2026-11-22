@@ -325,6 +325,12 @@ pub struct Settings {
     /// Subscribed city branches (slugs), shown in the side panel.
     #[serde(default)]
     pub subs: Vec<String>,
+    /// Developer mode: test voice on one computer (bots, a second window).
+    #[serde(default)]
+    pub dev: bool,
+    /// Look for a new CyberCord release at start (GitHub; asks before installing).
+    #[serde(default = "yes")]
+    pub update_check: bool,
 }
 
 fn hundred() -> f32 {

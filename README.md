@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.18</h1>
+<h1 align="center">CyberCord 0.19</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -97,7 +97,47 @@ CyberCord похож на Discord, но у него нет центрально�
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
 
-## Что нового в 0.18 — город SocioCyberneering
+## Что нового в 0.19
+
+- **Автообновление без потери данных.** Настройки → О программе →
+  «Проверить обновления» (и проверка при запуске; выключается). Если вышла
+  новая версия — зелёная кнопка «⬆ Обновление» в строке состояния:
+  - архив скачивается с релизов GitHub и **проверяется по SHA-256**;
+  - **папка данных копируется в резервную копию**
+    (`~/.local/share/cybercord-backups/<старая>-to-<новая>-<дата>`,
+    хранятся последние 5; без кэша файлов);
+  - заменяется только сам файл программы, кнопка «Перезапустить».
+  Сообщения, друзья, ID, настройки и файлы лежат в своей папке и при
+  обновлении не трогаются; новые настройки всегда имеют значения по
+  умолчанию, поэтому старые файлы читаются как есть.
+- **Поиск научных статей** (плитка с колбой в левой полосе, кнопка в
+  направлении «Научные статьи» Первого города): **OpenAlex** (250+ млн
+  работ, все области) и **arXiv** (препринты). Бесплатно, без аккаунта.
+  Аннотация, авторы, год, журнал, число цитирований; **«Читать PDF»** —
+  во встроенной читалке (и сохраняется в «Загрузки»), **«PDF в чат»** —
+  файл с цитатой в открытый канал, **«Ссылка в чат»** — оформленная
+  ссылка с DOI. Фильтр «Только в открытом доступе».
+- **Режим разработчика — голос на одном компьютере** (Настройки → О
+  программе, или запуск с `--dev`; красная кнопка DEV в строке состояния):
+  - **эхо-бот** повторяет услышанное через 1,5 с — вы слышите себя через
+    весь путь: микрофон → сеть → другой узел → обратно → колонки;
+  - **бот-тон** («бип-бип-бииип») и **бот-музыка** (звук интро) —
+    проверка воспроизведения, индикатора «говорит» и разрывов;
+  - **второе окно** — ещё один CyberCord как пользователь «Тест-2»;
+  - счётчики: кадров/с отправлено и получено, буфер, кто в комнате и
+    кто говорит; папка логов.
+  Тестовые узлы — копии программы со своей папкой данных и ID, связаны
+  с вами через 127.0.0.1, не объявляются в сети и DHT; боты не открывают
+  звуковые устройства. Останавливаются вместе с CyberCord.
+- **«Первый город»** — так теперь называется карта SocioCyberneering.
+
+![Режим разработчика: боты в голосовом канале](docs/img/screen-dev.png)
+
+![Поиск научных статей](docs/img/screen-papers.png)
+
+![Обновление установлено, резервная копия данных](docs/img/screen-update.png)
+
+## Что нового в 0.18 — Первый город SocioCyberneering
 
 - **Карта-город** (плитка с городом в левой полосе): в центре
   SocioCyberneering Inc., вокруг 8 районов — **Науки, Проекты, Дизайн,
@@ -117,7 +157,7 @@ CyberCord похож на Discord, но у него нет центрально�
   каналы направлений — обычные P2P-каналы (`cc/ch/city.<направление>/<канал>`),
   без сервера; подписки хранятся у вас и переживают обновления.
 
-![Город SocioCyberneering: районы и направления](docs/img/screen-city.png)
+![Первый город SocioCyberneering: районы и направления](docs/img/screen-city.png)
 
 ![Канал направления: цель и готовые сообщения](docs/img/screen-city-branch.png)
 
@@ -484,12 +524,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.18.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.19.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.18.0-linux-x86_64.tar.gz
-cd cybercord-0.18.0-linux-x86_64
+tar xf cybercord-0.19.0-linux-x86_64.tar.gz
+cd cybercord-0.19.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -695,6 +735,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.19:** auto-update from GitHub releases with a SHA-256 check and a data backup before installing; scientific article search (OpenAlex + arXiv) with a built-in PDF reader and sharing to chats; developer mode for testing voice on one computer (echo, tone and music bots, a second window, live counters); the city map is now "The First City".
 
 **0.18:** the SocioCyberneering city map: 8 districts and 46 branches around the centre, search, a card with the goal and channels, subscribe → the branch appears in the side panel; the channel goal is shown on entering; ready messages in the chat header (CAD branches get a file/version template).
 

@@ -217,6 +217,16 @@ impl VoiceIo {
     }
 }
 
+/// Voice without audio devices (developer test bots): only the playback
+/// buffer, nothing is opened, the microphone stays free for the real user.
+pub fn start_silent() -> VoiceIo {
+    VoiceIo {
+        playback: Arc::new(Mutex::new(VecDeque::new())),
+        #[cfg(feature = "voice")]
+        _streams: Vec::new(),
+    }
+}
+
 /// Start audio on the chosen devices. `mic_active` gates capture (mic toggle);
 /// `capture_tx` receives 20 ms 48 kHz frames to transmit over the network.
 pub fn start(mic_active: Arc<AtomicBool>, capture_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>) -> VoiceIo {

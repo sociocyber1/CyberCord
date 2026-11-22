@@ -10,7 +10,7 @@
 //! the relayed link into a direct one. Only nodes that announced themselves are
 //! ever dialed, and dialing is rate-limited — no address-range scanning.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -131,6 +131,9 @@ pub enum UiEvent {
     Hub { hub: Option<String>, standby: Option<String> },
     VoiceJoined { room: Option<String> },
     Talking { name: String },
+    /// Voice counters for developer mode: frames sent / received since the
+    /// last report (every 5 s), and the playback buffer in ms.
+    VoiceStats { sent: u32, recv: u32, buffer_ms: u32 },
     /// Someone's public voice room (from their heartbeat); None = not in voice.
     VoiceRoster { peer: String, name: String, room: Option<String> },
     Friend { peer_id: String, name: String, online: bool },
@@ -174,6 +177,18 @@ pub struct NetConfig {
     pub scan: bool,
     /// User status shown to others ("", online, offline, work, sleep, …).
     pub status: String,
+    /// Developer mode: this node is a voice test bot (no audio devices).
+    pub voice_bot: Option<VoiceBot>,
+}
+
+/// Developer test bots for checking voice on one computer.
+#[derive(Clone, Debug)]
+pub enum VoiceBot {
+    /// Repeats what it hears after a delay — you hear yourself through the
+    /// whole network path (capture → gossip → another node → back → playback).
+    Echo { delay_ms: u64 },
+    /// Speaks a fixed 48 kHz mono clip in a loop (tone pattern, music).
+    Play(Arc<Vec<i16>>),
 }
 
 pub fn spawn(cfg: NetConfig) -> NetworkHandle {
@@ -450,6 +465,8 @@ async fn run(
     let no_listen = env_flag("CYBERCORD_NO_LISTEN");
     let force_relay = env_flag("CYBERCORD_FORCE_RELAY") || no_listen;
     let allow_loopback = env_flag("CYBERCORD_ALLOW_LOOPBACK");
+    //   CYBERCORD_BOT_AS_HUMAN=1  a test bot's frames look like a person's (to test the echo bot)
+    let bot_as_human = env_flag("CYBERCORD_BOT_AS_HUMAN");
 
     let name = cfg.name.clone();
     let keypair = load_or_create_identity(&cfg.identity)?;
@@ -583,6 +600,12 @@ async fn run(
     let mut voice_io: Option<voice::VoiceIo> = None;
     let mut voice_room: Option<ChannelId> = None;
     let mut voice_seq: u32 = 0;
+    let voice_bot = cfg.voice_bot.clone();
+    let mut bot_iv = tokio::time::interval(Duration::from_millis(if voice_bot.is_some() { 20 } else { 3_600_000 }));
+    let mut echo_q: VecDeque<(Instant, Vec<i16>)> = VecDeque::new();
+    let mut play_pos: usize = 0;
+    let mut play_pause: u32 = 0;
+    let (mut v_sent, mut v_recv) = (0u32, 0u32);
     let mut last_score: f64 = 0.0;
 
     // Map + people directory.
@@ -665,7 +688,7 @@ async fn run(
                         }
                         let vt = IdentTopic::new(voice_topic_for(&local_id, &channel));
                         let _ = swarm.behaviour_mut().gossipsub.subscribe(&vt);
-                        voice_io = Some(voice::start(mic.clone(), voice_cap_tx.clone()));
+                        voice_io = Some(if voice_bot.is_some() { voice::start_silent() } else { voice::start(mic.clone(), voice_cap_tx.clone()) });
                         voice_room = Some(channel.clone());
                         mic.store(false, Ordering::Relaxed);
                         emit(&event_tx, UiEvent::VoiceJoined { room: Some(format!("{}/{}", channel.guild, channel.channel)) });
@@ -869,16 +892,59 @@ async fn run(
             Some(frame) = voice_cap_rx.recv() => {
                 if mic.load(Ordering::Relaxed) {
                     if let Some(room) = &voice_room {
-                        let vf = VoiceFrame { room: room.clone(), name: name.clone(), seq: voice_seq, pcm: frame };
+                        let vf = VoiceFrame { room: room.clone(), name: name.clone(), seq: voice_seq, pcm: frame, bot: false };
                         voice_seq = voice_seq.wrapping_add(1);
                         let topic = IdentTopic::new(voice_topic_for(&local_id, room));
-                        let _ = swarm.behaviour_mut().gossipsub.publish(topic, Wire::Voice(vf).encode());
+                        if swarm.behaviour_mut().gossipsub.publish(topic, Wire::Voice(vf).encode()).is_ok() {
+                            v_sent += 1;
+                        }
+                    }
+                }
+            }
+
+            _ = bot_iv.tick(), if voice_bot.is_some() => {
+                // a developer test bot speaks one 20 ms frame per tick
+                let Some(room) = voice_room.clone() else { continue };
+                let frame: Option<Vec<i16>> = match &voice_bot {
+                    Some(VoiceBot::Echo { .. }) => match echo_q.front() {
+                        Some((due, _)) if *due <= Instant::now() => echo_q.pop_front().map(|(_, f)| f),
+                        _ => None,
+                    },
+                    Some(VoiceBot::Play(clip)) if !clip.is_empty() => {
+                        if play_pause > 0 {
+                            play_pause -= 1;
+                            None
+                        } else {
+                            let end = (play_pos + voice::FRAME_SAMPLES).min(clip.len());
+                            let f = clip[play_pos..end].to_vec();
+                            play_pos = end;
+                            if play_pos >= clip.len() {
+                                play_pos = 0;
+                                play_pause = 50; // 1 s of silence between loops
+                            }
+                            Some(f)
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(pcm) = frame {
+                    let vf = VoiceFrame { room: room.clone(), name: name.clone(), seq: voice_seq, pcm, bot: !bot_as_human };
+                    voice_seq = voice_seq.wrapping_add(1);
+                    let topic = IdentTopic::new(voice_topic_for(&local_id, &room));
+                    if swarm.behaviour_mut().gossipsub.publish(topic, Wire::Voice(vf).encode()).is_ok() {
+                        v_sent += 1;
                     }
                 }
             }
 
             _ = ticker.tick() => {
                 tick_n += 1;
+                if voice_room.is_some() {
+                    let buffer_ms = voice_io.as_ref().and_then(|io| io.playback.lock().ok().map(|b| (b.len() as u64 * 1000 / voice::SAMPLE_RATE as u64) as u32)).unwrap_or(0);
+                    emit(&event_tx, UiEvent::VoiceStats { sent: v_sent, recv: v_recv, buffer_ms });
+                }
+                v_sent = 0;
+                v_recv = 0;
                 // re-announce my profile now and then (and soon after new peers connect)
                 if (profile_due || tick_n % 24 == 0) && !connected_peers.is_empty() {
                     if let Some(p) = profiles.get(&local_id) {
@@ -1590,8 +1656,14 @@ async fn run(
                                 }
                             }
                             Wire::Voice(vf) => {
-                                if let Some(io) = &voice_io {
+                                v_recv += 1;
+                                if let (Some(io), None) = (&voice_io, &voice_bot) {
                                     io.push_playback(&vf.pcm);
+                                }
+                                if let Some(VoiceBot::Echo { delay_ms }) = &voice_bot {
+                                    if !vf.bot && echo_q.len() < 50 * 10 {
+                                        echo_q.push_back((Instant::now() + Duration::from_millis(*delay_ms), vf.pcm.clone()));
+                                    }
                                 }
                                 emit(&event_tx, UiEvent::Talking { name: vf.name });
                             }

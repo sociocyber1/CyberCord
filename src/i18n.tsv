@@ -537,11 +537,11 @@ intro_watch_long	Watch the intro video	Смотреть интро-видео	Д
 circle_sound_tap	tap for sound	нажмите — звук	натисніть — звук	tippen für Ton	toca para sonido	touchez pour le son	点击播放声音	タップで音声
 circle_no_sound	no sound	без звука	без звуку	ohne Ton	sin sonido	sans son	无声音	音声なし
 circle_mic_off	Microphone unavailable — this circle will be silent. Check Settings → Voice & sound.	Микрофон недоступен — кружок будет без звука. Проверьте Настройки → Голос и звук.	Мікрофон недоступний — кружечок буде без звуку. Перевірте Налаштування → Голос і звук.					
-city_tip	SocioCyberneering city map	Карта SocioCyberneering	Карта SocioCyberneering	SocioCyberneering-Stadtkarte	Mapa de la ciudad SocioCyberneering	Carte de la ville SocioCyberneering	SocioCyberneering 城市地图	SocioCyberneering 都市マップ
+city_tip	The First City — SocioCyberneering map	Первый город — карта SocioCyberneering	Перше місто — мапа SocioCyberneering	Die Erste Stadt — SocioCyberneering-Karte	La Primera Ciudad — mapa SocioCyberneering	La Première Ville — carte SocioCyberneering	第一座城市 — SocioCyberneering 地图	最初の都市 — SocioCyberneering マップ
 subs_tip	My subscriptions	Мои подписки	Мої підписки	Meine Abos	Mis suscripciones	Mes abonnements	我的订阅	購読中
 subs_h	Subscriptions	Подписки	Підписки	Abos	Suscripciones	Abonnements	订阅	購読
-city_h	SocioCyberneering city	Город SocioCyberneering	Місто SocioCyberneering	Stadt SocioCyberneering	Ciudad SocioCyberneering	Ville SocioCyberneering	SocioCyberneering 城市	SocioCyberneering の都市
-city_sub	Districts → branches → chats and voice rooms. Subscribe to a branch — it appears in the side panel. The goal: people cooperating on projects across SocioCyberneering.	Районы → направления → чаты и голосовые каналы. Подпишитесь на направление — оно появится в левой панели. Задача — кооперировать людей в проекты по всему SocioCyberneering.	Райони → напрями → чати й голосові канали. Підпишіться — напрям з'явиться в лівій панелі. Мета — кооперувати людей у проєкти по всьому SocioCyberneering.					
+city_h	The First City	Первый город	Перше місто	Die Erste Stadt	La Primera Ciudad	La Première Ville	第一座城市	最初の都市
+city_sub	SocioCyberneering districts → branches → chats and voice rooms. Subscribe to a branch — it appears in the side panel. The goal: people cooperating on projects across SocioCyberneering.	Районы SocioCyberneering → направления → чаты и голосовые каналы. Подпишитесь на направление — оно появится в левой панели. Задача — кооперировать людей в проекты по всему SocioCyberneering.	Райони SocioCyberneering → напрями → чати й голосові канали. Підпишіться — напрям з'явиться в лівій панелі. Мета — кооперувати людей у проєкти по всьому SocioCyberneering.					
 city_search	Search branches	Поиск направлений	Пошук напрямів	Bereiche suchen	Buscar ramas	Chercher	搜索方向	分野を検索
 city_found	FOUND	НАЙДЕНО	ЗНАЙДЕНО	GEFUNDEN	ENCONTRADO	TROUVÉ	找到	見つかった
 city_pick	Click a node on the map or search for a branch.	Нажмите на узел карты или найдите направление.	Натисніть на вузол мапи або знайдіть напрям.					
@@ -551,7 +551,7 @@ city_unsub	Unsubscribe	Отписаться	Відписатися	Abbestellen	C
 city_sub_btn	Subscribe	Подписаться	Підписатися	Abonnieren	Suscribirse	S'abonner	订阅	購読
 city_goal	Goal	Цель	Мета	Ziel	Objetivo	But	目标	目的
 city_ready	Ready messages	Готовые сообщения	Готові повідомлення	Vorlagen	Mensajes listos	Messages prêts	现成消息	定型文
-city_open_map	Open the city map	Открыть карту города	Відкрити мапу міста	Stadtkarte öffnen	Abrir el mapa	Ouvrir la carte	打开城市地图	都市マップを開く
+city_open_map	Open the First City map	Открыть карту Первого города	Відкрити мапу Першого міста	Karte der Ersten Stadt öffnen	Abrir el mapa de la Primera Ciudad	Ouvrir la carte de la Première Ville	打开第一座城市地图	最初の都市のマップを開く
 city_welcome	You are subscribed — the branch is now in the side panel.	Вы подписались — направление теперь в левой панели.	Ви підписалися — напрям тепер у лівій панелі.					
 city_welcome_tip	Start with a ready message (top of the chat): who you look for, a question with facts, or a result with date and version.	Начните с готового сообщения (вверху чата): кого ищете, вопрос с фактами или результат с датой и версией.	Почніть із готового повідомлення (вгорі чату): кого шукаєте, питання з фактами або результат із датою й версією.					
 city_ch_chat	talk about the branch	общение по направлению	спілкування за напрямом					
@@ -561,3 +561,72 @@ ch_chat	chat	общий	загальний	allgemein	general	général	闲聊	�
 ch_projects	projects	проекты	проєкти	projekte	proyectos	projets	项目	プロジェクト
 ch_help	help	помощь	допомога	hilfe	ayuda	aide	帮助	ヘルプ
 ch_room	voice room	голосовая	голосова	sprachraum	sala de voz	salon vocal	语音室	ボイスルーム
+devm_title	Developer mode	Режим разработчика	Режим розробника	Entwicklermodus	Modo desarrollador	Mode développeur	开发者模式	開発者モード
+devm_toggle	Developer mode	Режим разработчика	Режим розробника	Entwicklermodus	Modo desarrollador	Mode développeur	开发者模式	開発者モード
+devm_open	Open the developer panel	Открыть панель разработчика	Відкрити панель розробника	Entwicklerpanel öffnen	Abrir el panel	Ouvrir le panneau	打开开发者面板	開発者パネルを開く
+devm_about	Test voice on one computer: echo, tone and music bots, a second window as another user. Also: start with --dev. A red DEV button appears in the status bar.	Проверка голоса на одном компьютере: эхо-бот, бот-тон, бот-музыка и второе окно как другой пользователь. Также запуск с --dev. В строке состояния появится красная кнопка DEV.	Перевірка голосу на одному комп'ютері: ехо-бот, бот-тон, бот-музика і друге вікно як інший користувач. Також запуск з --dev. У рядку стану з'явиться червона кнопка DEV.					
+devm_voice_h	Voice on one computer	Голос на одном компьютере	Голос на одному комп'ютері	Sprache auf einem Rechner	Voz en un ordenador	Voix sur un ordinateur	单机测试语音	1台でボイス確認
+devm_voice_info	Test nodes are copies of CyberCord with their own data folder and ID, connected to you over 127.0.0.1 (not announced on the LAN or the DHT). Bots open no sound device — the microphone stays yours.	Тестовые узлы — копии CyberCord со своей папкой данных и своим ID, подключённые к вам через 127.0.0.1 (без объявления в сети и DHT). Боты не открывают звуковые устройства — микрофон остаётся вашим.	Тестові вузли — копії CyberCord зі своєю папкою даних і своїм ID, підключені до вас через 127.0.0.1 (без оголошення в мережі та DHT). Боти не відкривають звукові пристрої — мікрофон лишається вашим.					
+devm_room	Room	Комната	Кімната	Raum	Sala	Salon	房间	ルーム
+devm_join	Join	Войти	Увійти	Beitreten	Entrar	Rejoindre	加入	参加
+devm_no_addr	This node has no listen address yet — wait a few seconds.	У узла ещё нет адреса — подождите несколько секунд.	У вузла ще немає адреси — зачекайте кілька секунд.					
+devm_echo	Echo bot	Эхо-бот	Ехо-бот	Echo-Bot	Bot eco	Bot écho	回声机器人	エコーボット
+devm_echo_d	Repeats what it hears after 1.5 s: you hear yourself through the whole network path.	Повторяет услышанное через 1,5 с: вы слышите себя через весь сетевой путь.	Повторює почуте через 1,5 с: ви чуєте себе через увесь мережевий шлях.					
+devm_echo_name	Echo bot (test)	Эхо-бот (тест)	Ехо-бот (тест)	Echo-Bot (Test)	Bot eco (prueba)	Bot écho (test)	回声机器人（测试）	エコーボット（テスト）
+devm_tone	Tone bot	Бот-тон	Бот-тон	Ton-Bot	Bot tono	Bot tonalité	音调机器人	トーンボット
+devm_tone_d	Plays “beep-beep-beeep” every 3 s: checks playback and the speaking indicator.	Играет «бип-бип-бииип» каждые 3 с: проверка воспроизведения и индикатора «говорит».	Грає «біп-біп-бііп» кожні 3 с: перевірка відтворення та індикатора «говорить».					
+devm_tone_name	Tone bot (test)	Бот-тон (тест)	Бот-тон (тест)	Ton-Bot (Test)	Bot tono (prueba)	Bot tonalité (test)	音调机器人（测试）	トーンボット（テスト）
+devm_music	Music bot	Бот-музыка	Бот-музика	Musik-Bot	Bot música	Bot musique	音乐机器人	音楽ボット
+devm_music_d	Plays the intro soundtrack in a loop: long continuous sound, listen for gaps.	Играет звук интро по кругу: длинный непрерывный звук, слушайте разрывы.	Грає звук інтро по колу: довгий безперервний звук, слухайте розриви.					
+devm_music_name	Music bot (test)	Бот-музыка (тест)	Бот-музика (тест)	Musik-Bot (Test)	Bot música (prueba)	Bot musique (test)	音乐机器人（测试）	音楽ボット（テスト）
+devm_window	Second window	Второе окно	Друге вікно	Zweites Fenster	Segunda ventana	Seconde fenêtre	第二个窗口	2つ目のウィンドウ
+devm_window_d	Another CyberCord as user “Test-2”: chat, calls, the voice room from the other side.	Ещё один CyberCord как пользователь «Тест-2»: чат, звонки, голосовая с другой стороны.	Ще один CyberCord як користувач «Тест-2»: чат, дзвінки, голосова з іншого боку.					
+devm_window_name	Test-2	Тест-2	Тест-2	Test-2	Prueba-2	Test-2	测试-2	テスト-2
+devm_start	Start	Запустить	Запустити	Starten	Iniciar	Démarrer	启动	起動
+devm_stop	Stop	Остановить	Зупинити	Stoppen	Detener	Arrêter	停止	停止
+devm_stop_all	Stop all	Остановить всё	Зупинити все	Alle stoppen	Detener todo	Tout arrêter	全部停止	すべて停止
+devm_logs	Logs folder	Папка логов	Тека логів	Log-Ordner	Carpeta de registros	Dossier des journaux	日志文件夹	ログフォルダ
+devm_headphones	Use headphones: from speakers the sound gets back into the microphone and the echo bot repeats it again.	Используйте наушники: из колонок звук снова попадает в микрофон, и эхо-бот повторяет его ещё раз.	Використовуйте навушники: з колонок звук знову потрапляє в мікрофон, і ехо-бот повторює його ще раз.					
+devm_stats	LIVE	СЕЙЧАС	ЗАРАЗ	LIVE	EN VIVO	EN DIRECT	实时	ライブ
+devm_stats_line	Voice: sent {s} · received {r} frames/s (50 = one speaker) · buffer {b} ms	Голос: отправлено {s} · получено {r} кадров/с (50 = один говорящий) · буфер {b} мс	Голос: надіслано {s} · отримано {r} кадрів/с (50 = один мовець) · буфер {b} мс					
+devm_not_in_voice	You are not in a voice room.	Вы не в голосовом канале.	Ви не в голосовому каналі.					
+devm_in_room	In the room	В комнате	У кімнаті	Im Raum	En la sala	Dans le salon	房间内	ルーム内
+devm_talking	Talking	Говорят	Говорять	Spricht	Hablando	Parle	正在说话	発言中
+upd_h	Updates	Обновления	Оновлення	Updates	Actualizaciones	Mises à jour	更新	アップデート
+upd_check	Check for updates	Проверить обновления	Перевірити оновлення	Nach Updates suchen	Buscar actualizaciones	Rechercher des mises à jour	检查更新	更新を確認
+upd_auto	Check at start	Проверять при запуске	Перевіряти під час запуску	Beim Start prüfen	Comprobar al iniciar	Vérifier au démarrage	启动时检查	起動時に確認
+upd_backups	Backups folder	Папка резервных копий	Тека резервних копій	Sicherungsordner	Carpeta de copias	Dossier des sauvegardes	备份文件夹	バックアップフォルダ
+upd_checking	Asking GitHub for the latest release…	Спрашиваю GitHub о последней версии…	Питаю GitHub про останню версію…					
+upd_latest	You have the latest version ({v}).	У вас последняя версия ({v}).	У вас остання версія ({v}).	Neueste Version ({v}).	Tienes la última versión ({v}).	Vous avez la dernière version ({v}).	已是最新版本（{v}）。	最新版です（{v}）。
+upd_avail	CyberCord {v} is out (you have {c})	Вышла CyberCord {v} (у вас {c})	Вийшла CyberCord {v} (у вас {c})	CyberCord {v} ist da (Sie haben {c})	Salió CyberCord {v} (tienes {c})	CyberCord {v} est sortie (vous avez {c})	CyberCord {v} 已发布（当前 {c}）	CyberCord {v} が出ました（現在 {c}）
+upd_safe	Messages, friends, ID, settings and files stay in the data folder; before installing it is copied to a backup. The archive is checked by SHA-256.	Сообщения, друзья, ID, настройки и файлы остаются в папке данных; перед установкой она копируется в резервную копию. Архив проверяется по SHA-256.	Повідомлення, друзі, ID, налаштування й файли лишаються в теці даних; перед встановленням вона копіюється в резервну копію. Архів перевіряється за SHA-256.					
+upd_install	Download and install	Скачать и установить	Завантажити й встановити	Herunterladen und installieren	Descargar e instalar	Télécharger et installer	下载并安装	ダウンロードしてインストール
+upd_page	Release page	Страница релиза	Сторінка релізу	Release-Seite	Página de la versión	Page de la version	发布页面	リリースページ
+upd_downloading	Downloading	Загрузка	Завантаження	Lade	Descargando	Téléchargement	下载中	ダウンロード中
+upd_installing	Checking SHA-256, backing up the data, replacing the program…	Проверка SHA-256, резервная копия данных, замена программы…	Перевірка SHA-256, резервна копія даних, заміна програми…					
+upd_ready	CyberCord {v} is installed — restart to use it.	CyberCord {v} установлена — перезапустите, чтобы начать.	CyberCord {v} встановлено — перезапустіть, щоб почати.					
+upd_backup_at	Data backup	Резервная копия данных	Резервна копія даних	Datensicherung	Copia de datos	Sauvegarde des données	数据备份	データのバックアップ
+upd_restart	Restart now	Перезапустить	Перезапустити	Jetzt neu starten	Reiniciar	Redémarrer	立即重启	再起動
+upd_failed	Update failed	Обновление не удалось	Оновлення не вдалося	Update fehlgeschlagen	Error al actualizar	Échec de la mise à jour	更新失败	更新に失敗
+upd_chip	⬆ Update {v}	⬆ Обновление {v}	⬆ Оновлення {v}	⬆ Update {v}	⬆ Actualización {v}	⬆ Mise à jour {v}	⬆ 更新 {v}	⬆ 更新 {v}
+upd_done_note	Updated {a} → {b}. Data backup: {p}	Обновлено {a} → {b}. Резервная копия данных: {p}	Оновлено {a} → {b}. Резервна копія даних: {p}					
+papers_tip	Scientific articles	Научные статьи	Наукові статті	Fachartikel	Artículos científicos	Articles scientifiques	科学论文	論文検索
+papers_h	Scientific articles	Научные статьи	Наукові статті	Fachartikel	Artículos científicos	Articles scientifiques	科学论文	論文
+papers_sub	Search OpenAlex (250+ million works) and arXiv (preprints) — free, no account. Read the PDF here, save it, send it or a link to the chat. Requests go straight from your computer to these sites.	Поиск по OpenAlex (250+ млн работ) и arXiv (препринты) — бесплатно, без аккаунта. Читайте PDF здесь, сохраняйте, отправляйте файл или ссылку в чат. Запросы идут напрямую с вашего компьютера на эти сайты.	Пошук в OpenAlex (250+ млн робіт) і arXiv (препринти) — безкоштовно, без акаунта. Читайте PDF тут, зберігайте, надсилайте файл або посилання в чат. Запити йдуть напряму з вашого комп'ютера на ці сайти.					
+papers_hint	Words, title, author, DOI… (English finds the most)	Слова, название, автор, DOI… (на английском найдётся больше)	Слова, назва, автор, DOI… (англійською знайдеться більше)	Wörter, Titel, Autor, DOI…	Palabras, título, autor, DOI…	Mots, titre, auteur, DOI…	关键词、标题、作者、DOI…	キーワード、題名、著者、DOI…
+papers_go	Search	Найти	Знайти	Suchen	Buscar	Chercher	搜索	検索
+papers_openalex_tip	All fields, journals and books; open PDFs where available	Все области, журналы и книги; открытые PDF, где есть	Усі галузі, журнали й книги; відкриті PDF, де є					
+papers_arxiv_tip	Preprints in physics, math, CS, biology…; always with a PDF	Препринты по физике, математике, CS, биологии…; всегда с PDF	Препринти з фізики, математики, CS, біології…; завжди з PDF					
+papers_oa	Only open access	Только в открытом доступе	Лише у відкритому доступі	Nur Open Access	Solo acceso abierto	Accès ouvert seulement	仅开放获取	オープンアクセスのみ
+papers_failed	Search failed	Поиск не удался	Пошук не вдався	Suche fehlgeschlagen	Error de búsqueda	Échec de la recherche	搜索失败	検索に失敗
+papers_empty	Type a few words and press Enter. Examples:	Введите несколько слов и нажмите Enter. Например:	Введіть кілька слів і натисніть Enter. Наприклад:					
+papers_cited	cited {n}×	цитируют {n}×	цитують {n}×	{n}× zitiert	citado {n}×	cité {n}×	被引 {n} 次	被引用 {n}
+papers_more	more	ещё	ще	mehr	más	plus	更多	もっと
+papers_less	less	свернуть	згорнути	weniger	menos	moins	收起	閉じる
+papers_read	Read PDF	Читать PDF	Читати PDF	PDF lesen	Leer PDF	Lire le PDF	阅读 PDF	PDFを読む
+papers_send_pdf	Send PDF to the chat	PDF в чат	PDF у чат	PDF in den Chat	PDF al chat	PDF dans le chat	发送 PDF 到聊天	PDFをチャットへ
+papers_no_pdf	no open PDF	нет открытого PDF	немає відкритого PDF	kein offenes PDF	sin PDF abierto	pas de PDF ouvert	无公开 PDF	公開PDFなし
+papers_link	Link to the chat	Ссылка в чат	Посилання в чат	Link in den Chat	Enlace al chat	Lien dans le chat	链接到聊天	リンクをチャットへ
+papers_page	Page	Страница	Сторінка	Seite	Página	Page	页面	ページ
+papers_saved	Saved: {p}	Сохранено: {p}	Збережено: {p}	Gespeichert: {p}	Guardado: {p}	Enregistré : {p}	已保存：{p}	保存しました：{p}
+papers_pdf_failed	PDF not downloaded	PDF не скачан	PDF не завантажено	PDF nicht geladen	PDF no descargado	PDF non téléchargé	PDF 未下载	PDFを取得できません

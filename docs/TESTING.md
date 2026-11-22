@@ -18,6 +18,26 @@ cargo test
 | автозапуск | создаётся и удаляется `~/.config/autostart/cybercord.desktop` |
 | `music`, `voice_rec` | декодирование WAV/mp3/flac, WAV голосовых |
 
+## Голос на одном компьютере (режим разработчика)
+
+В окне: Настройки → О программе → «Режим разработчика» (или `cybercord --dev`),
+затем красная кнопка **DEV** внизу. Эхо-бот, бот-тон, бот-музыка, второе окно.
+
+Без окна:
+
+```bash
+# бот в комнате sce/lounge, подключается к вашему узлу по 127.0.0.1
+CYBERCORD_DATA_DIR=/tmp/bot CYBERCORD_ALLOW_LOOPBACK=1 \
+  ./target/release/cybercord --headless --no-mdns --name Эхо \
+  --bootstrap /ip4/127.0.0.1/tcp/47100/p2p/<ваш ID> \
+  --voice-bot echo --voice-room sce/lounge
+```
+
+`CYBERCORD_BOT_AS_HUMAN=1` — кадры бота выглядят как человеческие (чтобы
+проверить эхо-бота другим ботом). `CYBERCORD_UPDATE_FROM=0.1.0` — программа
+считает себя старой версией (проверка автообновления).
+`CYBERCORD_PAPERS_SAMPLE=файл.json` — сохранённый ответ OpenAlex вместо сети.
+
 ## Несколько нод на одном компьютере
 
 ```bash

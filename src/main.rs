@@ -3,6 +3,9 @@
 //! engine with a terminal front-end. There are no servers: every copy is a node.
 
 mod app;
+mod dev;
+mod update;
+mod papers;
 mod camera;
 mod blocks;
 mod docs;
@@ -65,6 +68,19 @@ struct Args {
     /// Channel to open in headless mode, as guild/channel.
     #[arg(long, default_value = "sce/welcome")]
     channel: String,
+
+    /// Developer mode (Settings → About → Developer mode does the same).
+    #[arg(long)]
+    dev: bool,
+
+    /// Developer test bot (terminal mode): echo | tone | music. The bot joins
+    /// --voice-room without opening any audio device.
+    #[arg(long)]
+    voice_bot: Option<String>,
+
+    /// Voice room for the test bot, as guild/channel (e.g. sce/lounge).
+    #[arg(long)]
+    voice_room: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -80,6 +96,7 @@ fn main() -> anyhow::Result<()> {
         .with_target(false)
         .init();
 
+    update::remember_exe();
     let args = Args::parse();
     let cfg = NetConfig {
         name: args.name.clone(),
@@ -92,11 +109,25 @@ fn main() -> anyhow::Result<()> {
         no_mdns: args.no_mdns,
         tcp_port: args.tcp_port,
         quic_port: args.quic_port,
+        voice_bot: args.voice_bot.as_deref().map(make_bot),
     };
+    if args.dev {
+        std::env::set_var("CYBERCORD_DEV", "1");
+    }
 
     if args.headless {
-        run_headless(cfg, &args.channel)
+        let room = if cfg.voice_bot.is_some() { args.voice_room.clone() } else { None };
+        run_headless(cfg, &args.channel, room)
     } else {
+        if std::env::var("CYBERCORD_DEV_CHILD").is_ok() {
+            // a developer-mode test window lives as long as the CyberCord that started it
+            std::thread::spawn(|| {
+                use std::io::Read;
+                let mut sink = [0u8; 64];
+                while matches!(std::io::stdin().read(&mut sink), Ok(n) if n > 0) {}
+                std::process::exit(0);
+            });
+        }
         app::run_gui(cfg, args.minimized).map_err(|e| anyhow::anyhow!("gui: {e}"))
     }
 }
@@ -153,12 +184,48 @@ commands:
 anything else is sent to the open channel.";
 
 /// Terminal front-end: print events; stdin lines are commands or channel chat.
-fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
+/// Developer test bots: echo, a tone pattern, or the intro soundtrack.
+fn make_bot(kind: &str) -> net::VoiceBot {
+    use std::sync::Arc;
+    const RATE: f32 = 48_000.0;
+    match kind {
+        "tone" => {
+            // "beep-beep-beeeep" rising, 3 s: easy to tell apart from speech
+            let mut v: Vec<i16> = Vec::new();
+            for (f, ms) in [(523.0f32, 180), (0.0, 120), (659.0, 180), (0.0, 120), (784.0, 500), (0.0, 1900)] {
+                let n = (RATE * ms as f32 / 1000.0) as usize;
+                for i in 0..n {
+                    let t = i as f32 / RATE;
+                    let env = ((i as f32 / 480.0).min(1.0)) * (((n - i) as f32 / 480.0).min(1.0));
+                    v.push(if f > 0.0 { ((t * f * std::f32::consts::TAU).sin() * 9000.0 * env) as i16 } else { 0 });
+                }
+            }
+            net::VoiceBot::Play(Arc::new(v))
+        }
+        "music" => {
+            let mut v: Vec<i16> = Vec::new();
+            if let Ok(tr) = music::decode(intro::VIDEO) {
+                let ch = tr.channels.max(1);
+                let mono: Vec<i16> = tr.samples.chunks(ch).map(|c| (c.iter().sum::<f32>() / ch as f32 * 0.6 * 32767.0) as i16).collect();
+                let mut rs = cybercord_node::voice::Resampler::new(tr.rate, 48_000);
+                rs.push(&mono, &mut v);
+            }
+            net::VoiceBot::Play(Arc::new(v))
+        }
+        _ => net::VoiceBot::Echo { delay_ms: 1500 },
+    }
+}
+
+fn run_headless(cfg: NetConfig, channel: &str, bot_room: Option<String>) -> anyhow::Result<()> {
     use std::io::BufRead;
     use std::sync::{Arc, Mutex};
 
     let name = cfg.name.clone();
     let handle = net::spawn(cfg);
+    if let Some(r) = &bot_room {
+        let _ = handle.cmd_tx.send(Cmd::JoinVoice { channel: parse_channel(r) });
+        println!("· test bot in voice room {r}");
+    }
     let mut current = parse_channel(channel);
     println!("CyberCord (headless) — {name} — channel {}/{}  (/help)", current.guild, current.channel);
 
@@ -176,6 +243,7 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
     let printer = std::thread::spawn(move || {
         let mut seen: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
         let mut rooms: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+        let mut talk_seen: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
         while let Ok(ev) = ev_rx.recv() {
             match ev {
                 UiEvent::Ready { peer_id, .. } => {
@@ -219,7 +287,16 @@ fn run_headless(cfg: NetConfig, channel: &str) -> anyhow::Result<()> {
                     standby.as_deref().map(|h| &h[..h.len().min(12)]).unwrap_or("—")
                 ),
                 UiEvent::VoiceJoined { room } => println!("· voice {}", room.as_deref().unwrap_or("left")),
-                UiEvent::Talking { name } => println!("· {name} is talking"),
+                UiEvent::Talking { name } => {
+                    // once per speaker per 3 s, not per 20 ms frame
+                    let now = std::time::Instant::now();
+                    let last = talk_seen.get(&name).copied();
+                    if last.map(|t| now.duration_since(t).as_secs() >= 3).unwrap_or(true) {
+                        println!("· {name} is talking");
+                    }
+                    talk_seen.insert(name, now);
+                }
+                UiEvent::VoiceStats { sent, recv, buffer_ms } => println!("· voice: sent {sent} · received {recv} frames / 5 s · buffer {buffer_ms} ms"),
                 UiEvent::Nodes(list) => *nodes2.lock().unwrap() = list,
                 UiEvent::Transfers(list) => {
                     let mut old = xfers2.lock().unwrap();

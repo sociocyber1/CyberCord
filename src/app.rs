@@ -212,6 +212,23 @@ pub struct CyberApp {
     show_map: bool,
     /// SocioCyberneering city map; my subscribed branches in the side panel
     show_city: bool,
+    /// Developer mode window; voice counters from the node
+    show_dev: bool,
+    /// Scientific article search
+    show_papers: bool,
+    papers: crate::papers::Search,
+    papers_q: String,
+    papers_src: crate::papers::Source,
+    papers_oa: bool,
+    papers_res: Vec<crate::papers::Paper>,
+    papers_busy: bool,
+    papers_err: Option<String>,
+    papers_expanded: HashSet<usize>,
+    /// PDFs being downloaded: url → (paper, send to the chat when done)
+    papers_pending: HashMap<String, (crate::papers::Paper, bool)>,
+    updater: crate::update::Updater,
+    update_checked: bool,
+    voice_stats: Option<(u32, u32, u32)>,
     show_subs: bool,
     sub_sel: (String, String),
     city_sel: Option<String>,
@@ -365,6 +382,20 @@ impl CyberApp {
             search_res: Vec::new(),
             show_map: false,
             show_city: false,
+            show_dev: false,
+            show_papers: false,
+            papers: crate::papers::Search::default(),
+            papers_q: String::new(),
+            papers_src: crate::papers::Source::OpenAlex,
+            papers_oa: false,
+            papers_res: Vec::new(),
+            papers_busy: false,
+            papers_err: None,
+            papers_expanded: HashSet::new(),
+            papers_pending: HashMap::new(),
+            updater: crate::update::Updater::default(),
+            update_checked: false,
+            voice_stats: None,
             show_subs: false,
             sub_sel: (String::new(), String::new()),
             city_sel: None,
@@ -411,6 +442,10 @@ impl CyberApp {
     /// Optional start view via $CYBERCORD_START, for demos and screenshots:
     /// "friends", "dm:<peer>", "chat", "tour:<n>", "emoji", "gifs", "rec", "settings".
     fn with_start_view(mut self) -> Self {
+        crate::update::cleanup_old();
+        if let Some((from, to, backup)) = crate::update::take_last_note() {
+            self.toast(self.t("upd_done_note").replace("{a}", &from).replace("{b}", &to).replace("{p}", &backup));
+        }
         // join the gossip topics of my city subscriptions
         for slug in self.settings.subs.clone() {
             for (c, _, _) in cybercord_node::city::TEXT {
@@ -422,6 +457,7 @@ impl CyberApp {
                 match part {
                     "city" => {
                         self.show_city = true;
+                        self.show_papers = false;
                         self.show_home = false;
                         self.city_sel = Some("physics".into());
                     }
@@ -451,6 +487,10 @@ impl CyberApp {
                     }
                     p if p.starts_with("doc:") => self.doc_open = Doc::from_id(&p[4..]),
                     p if p.starts_with("pdf:") => self.open_builtin_pdf(if &p[4..] == "gs" { "general-semantics.pdf" } else { "venus-project.pdf" }),
+                    "dev" => {
+                        self.settings.dev = true;
+                        self.show_dev = true;
+                    }
                     "proftab" => {
                         self.show_settings = true;
                         self.set_tab = SetTab::Profile;
@@ -470,6 +510,7 @@ impl CyberApp {
                     "map" => {
                         self.show_map = true;
                             self.show_city = false;
+                            self.show_papers = false;
                             self.show_subs = false;
                         self.show_home = false;
                     }
@@ -536,7 +577,7 @@ impl CyberApp {
     }
 
     fn chat_visible(&self) -> bool {
-        !self.show_downloads && !self.show_map && !self.show_city && !self.show_home && (!self.show_friends || self.dm_open.is_some())
+        !self.show_downloads && !self.show_map && !self.show_city && !self.show_papers && !self.show_home && (!self.show_friends || self.dm_open.is_some())
     }
 
     fn friend_name(&self, peer: &str) -> String {
@@ -632,6 +673,9 @@ impl CyberApp {
                 }
                 UiEvent::Talking { name } => {
                     self.talkers.insert(name, now_ms());
+                }
+                UiEvent::VoiceStats { sent, recv, buffer_ms } => {
+                    self.voice_stats = Some((sent, recv, buffer_ms));
                 }
             }
         }
@@ -1052,6 +1096,7 @@ impl CyberApp {
         self.popup = Popup::None;
         self.show_map = false;
                             self.show_city = false;
+                            self.show_papers = false;
                             self.show_subs = false;
         match TOUR[step].3 {
             Need::Home => {
@@ -1209,8 +1254,17 @@ impl CyberApp {
 }
 
 impl eframe::App for CyberApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        crate::dev::stop_all();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.drain_papers();
+        if !self.update_checked && self.settings.update_check && self.started.elapsed().as_secs() >= 10 {
+            self.update_checked = true;
+            self.updater.check(ctx.clone(), true);
+        }
         self.anims.retain(|_, t| t.elapsed().as_secs_f32() < 2.0);
         self.background_and_tray(ctx);
         self.media.poll(ctx);
@@ -1274,7 +1328,7 @@ impl eframe::App for CyberApp {
         } else {
             self.channel_column(ctx, &ch);
         }
-        if !self.show_map && !self.show_city {
+        if !self.show_map && !self.show_city && !self.show_papers {
             self.member_panel(ctx, &ch);
         }
         self.bottom_bar(ctx);
@@ -1288,6 +1342,8 @@ impl eframe::App for CyberApp {
                     self.map_view(ui);
                 } else if self.show_city {
                     self.city_view(ui);
+                } else if self.show_papers {
+                    self.papers_view(ui);
                 } else if self.show_home {
                     self.home_view(ui);
                 } else if self.show_friends && self.dm_open.is_none() {
@@ -1312,6 +1368,7 @@ impl eframe::App for CyberApp {
         self.block_editor(ctx);
         self.profile_window(ctx);
         self.city_welcome_window(ctx);
+        self.dev_window(ctx);
         self.pdf_overlay(ctx);
         self.draw_toast(ctx);
         self.draw_tour(ctx);
@@ -1338,6 +1395,7 @@ impl CyberApp {
                             self.show_friends = false;
                             self.show_map = false;
                             self.show_city = false;
+                            self.show_papers = false;
                             self.show_subs = false;
                             self.show_downloads = false;
                         }
@@ -1353,6 +1411,7 @@ impl CyberApp {
                             self.show_home = false;
                             self.show_map = false;
                             self.show_city = false;
+                            self.show_papers = false;
                             self.show_subs = false;
                             self.show_downloads = false;
                         }
@@ -1364,6 +1423,7 @@ impl CyberApp {
                         if nm.clicked() {
                             self.show_map = true;
                             self.show_city = false;
+                            self.show_papers = false;
                             self.show_subs = false;
                             self.show_home = false;
                             self.show_friends = false;
@@ -1373,6 +1433,18 @@ impl CyberApp {
                         let tex = self.icons.get(ui.ctx(), "city_tile", CITY_TILE);
                         if rail_tile(ui, tex, self.show_city, None).on_hover_text(self.t("city_tip")).clicked() {
                             self.show_city = true;
+                            self.show_papers = false;
+                            self.show_subs = false;
+                            self.show_map = false;
+                            self.show_home = false;
+                            self.show_friends = false;
+                            self.show_downloads = false;
+                        }
+                        ui.add_space(8.0);
+                        let tex = self.icons.get(ui.ctx(), "papers_tile", PAPERS_TILE);
+                        if rail_tile(ui, tex, self.show_papers, None).on_hover_text(self.t("papers_tip")).clicked() {
+                            self.show_papers = true;
+                            self.show_city = false;
                             self.show_subs = false;
                             self.show_map = false;
                             self.show_home = false;
@@ -1386,6 +1458,7 @@ impl CyberApp {
                             if rail_tile(ui, tex, on, Some(self.settings.subs.len())).on_hover_text(self.t("subs_tip")).clicked() {
                                 self.show_subs = true;
                                 self.show_city = false;
+                                self.show_papers = false;
                                 self.show_map = false;
                                 self.show_home = false;
                                 self.show_friends = false;
@@ -1401,7 +1474,7 @@ impl CyberApp {
                         ui.add_space(8.0);
                         let top = ui.cursor().min;
                         for (i, s) in SERVERS.iter().enumerate() {
-                            let selected = !self.show_home && !self.show_friends && !self.show_map && !self.show_city && !self.show_subs && i == self.sel_server;
+                            let selected = !self.show_home && !self.show_friends && !self.show_map && !self.show_city && !self.show_subs && !self.show_papers && i == self.sel_server;
                             let tex = self.icons.get(ui.ctx(), s.slug, s.icon);
                             let in_voice_here = self.in_voice.as_deref().map(|r| r.starts_with(&format!("{}/", s.slug))).unwrap_or(false);
                             let r = rail_tile(ui, tex, selected, None).on_hover_text(s.name);
@@ -1418,6 +1491,7 @@ impl CyberApp {
                                 self.show_friends = false;
                                 self.show_map = false;
                             self.show_city = false;
+                            self.show_papers = false;
                             self.show_subs = false;
                                 self.show_downloads = false;
                             }
@@ -1623,6 +1697,22 @@ impl CyberApp {
                     let hub = self.hub.as_deref().map(short).unwrap_or_else(|| "—".into());
                     ui.colored_label(th().ink2, RichText::new(format!("{}: {hub}", self.t("hub_label"))).small());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let crate::update::State::Available(r) = self.updater.get() {
+                            if ui.add(egui::Button::new(RichText::new(self.t("upd_chip").replace("{v}", &r.version)).small().b().color(th().on_accent)).fill(th().green).rounding(Rounding::same(4.0))).clicked() {
+                                self.show_settings = true;
+                                self.set_tab = SetTab::About;
+                                self.set_opened = Instant::now();
+                            }
+                            ui.separator();
+                        }
+                        if self.dev_on() {
+                            let bots = crate::dev::KINDS.iter().filter(|k| crate::dev::running(k)).count();
+                            let label = if bots > 0 { format!("DEV · {bots}") } else { "DEV".to_string() };
+                            if ui.add(egui::Button::new(RichText::new(label).small().b().color(Color32::WHITE)).fill(Color32::from_rgb(0xc0, 0x1c, 0x28)).rounding(Rounding::same(4.0))).on_hover_text(self.t("devm_title")).clicked() {
+                                self.show_dev = !self.show_dev;
+                            }
+                            ui.separator();
+                        }
                         let active = self.transfers.iter().filter(|t| matches!(t.state, "downloading" | "waiting" | "verifying")).count();
                         let label = if active > 0 { format!("⬇ {} ({active})", self.t("downloads_btn")) } else { format!("⬇ {}", self.t("downloads_btn")) };
                         if ui.add(egui::Button::new(RichText::new(label).small().color(if self.show_downloads { th().accent } else { th().ink2 })).frame(false)).clicked() {
@@ -1787,6 +1877,7 @@ impl CyberApp {
                 if ui.add(egui::Button::new(RichText::new(self.t("map_open")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).clicked() {
                     self.show_map = true;
                             self.show_city = false;
+                            self.show_papers = false;
                             self.show_subs = false;
                     self.show_home = false;
                     self.show_friends = false;
@@ -1920,6 +2011,9 @@ impl CyberApp {
                 let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
                 if let Some(b) = ch.guild.strip_prefix("city.").and_then(cybercord_node::city::branch) {
                     ui.colored_label(th().ink2, format!("· {}", if ru { b.ru } else { b.en }));
+                    if b.slug == "papers" && ui.small_button(self.t("papers_tip")).clicked() {
+                        self.show_papers = true;
+                    }
                     ui.menu_button(RichText::new(self.t("city_ready")).small(), |ui| {
                         ui.set_min_width(380.0);
                         for m in cybercord_node::city::ready_messages(b, ru) {
@@ -2340,6 +2434,7 @@ impl CyberApp {
         self.sub_sel = (branch.to_string(), channel.to_string());
         self.show_subs = true;
         self.show_city = false;
+        self.show_papers = false;
         self.show_map = false;
         self.show_home = false;
         self.show_friends = false;
@@ -2447,6 +2542,7 @@ impl CyberApp {
                 }
                 if ui.link(self.t("city_open_map")).clicked() {
                     self.show_city = true;
+                    self.show_papers = false;
                     self.show_subs = false;
                 }
             });
@@ -2531,8 +2627,9 @@ impl CyberApp {
                     }
                 }
             }
-            // centre: SocioCyberneering
+            // centre: SocioCyberneering, the First City
             p.circle_filled(center, r_in, Color32::from_rgb(0x0b, 0x12, 0x20));
+            p.text(center - egui::vec2(0.0, r_in * 0.66), Align2::CENTER_CENTER, self.t("city_h"), egui::FontId::new((r_in * 0.12).clamp(9.0, 13.0), egui::FontFamily::Name("bold".into())), Color32::from_rgb(0x9f, 0xd8, 0xff));
             let tex = self.icons.get(ui.ctx(), "app256", APP_ICON_256);
             p.image(tex, Rect::from_center_size(center - egui::vec2(0.0, 8.0), egui::vec2(r_in * 0.9, r_in * 0.9)), Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
             let mut job = egui::text::LayoutJob::default();
@@ -2631,6 +2728,360 @@ impl CyberApp {
         } else if !open {
             self.city_welcome = None;
         }
+    }
+
+    fn drain_papers(&mut self) {
+        use crate::papers::Msg;
+        while let Ok(m) = self.papers.rx.try_recv() {
+            match m {
+                Msg::Results(gen, r) => {
+                    if gen != self.papers.gen {
+                        continue;
+                    }
+                    self.papers_busy = false;
+                    self.papers_expanded.clear();
+                    match r {
+                        Ok(v) => {
+                            self.papers_err = None;
+                            self.papers_res = v;
+                        }
+                        Err(e) => self.papers_err = Some(e),
+                    }
+                }
+                Msg::Pdf(url, r) => {
+                    let Some((paper, share)) = self.papers_pending.remove(&url) else { continue };
+                    match r {
+                        Ok(bytes) => {
+                            let dir = cybercord_node::transfer::download_dir();
+                            let _ = std::fs::create_dir_all(&dir);
+                            let path = dir.join(paper.file_name());
+                            if let Err(e) = std::fs::write(&path, &bytes) {
+                                self.toast(format!("{}: {e}", path.display()));
+                                continue;
+                            }
+                            if share {
+                                self.show_papers = false;
+                                self.input = paper.citation();
+                                self.send_path(path.clone());
+                            } else {
+                                self.toast(self.t("papers_saved").replace("{p}", &path.display().to_string()));
+                                self.pdf = Some(crate::pdfview::PdfView::open(paper.title.clone(), paper.file_name(), Arc::new(bytes)));
+                            }
+                        }
+                        Err(e) => self.toast(format!("{}: {e}", self.t("papers_pdf_failed"))),
+                    }
+                }
+            }
+        }
+    }
+
+    fn papers_search(&mut self, ctx: &egui::Context) {
+        let q = self.papers_q.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        self.papers_busy = true;
+        self.papers_err = None;
+        self.papers.run(q, self.papers_src, self.papers_oa, ctx.clone());
+    }
+
+    /// Scientific article search: OpenAlex + arXiv; read, download, share.
+    fn papers_view(&mut self, ui: &mut egui::Ui) {
+        use crate::papers::Source;
+        let c = th();
+        ui.label(RichText::new(self.t("papers_h")).color(c.ink).b().size(20.0));
+        ui.colored_label(c.ink2, RichText::new(self.t("papers_sub")).small());
+        ui.add_space(6.0);
+        let mut go = false;
+        ui.horizontal(|ui| {
+            let hint = self.t("papers_hint");
+            let r = ui.add(egui::TextEdit::singleline(&mut self.papers_q).hint_text(hint).desired_width(ui.available_width() - 130.0));
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                go = true;
+            }
+            if ui.add(egui::Button::new(RichText::new(self.t("papers_go")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(110.0, 28.0))).clicked() {
+                go = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            let before = (self.papers_src, self.papers_oa);
+            ui.selectable_value(&mut self.papers_src, Source::OpenAlex, "OpenAlex").on_hover_text(self.t("papers_openalex_tip"));
+            ui.selectable_value(&mut self.papers_src, Source::Arxiv, "arXiv").on_hover_text(self.t("papers_arxiv_tip"));
+            ui.separator();
+            let oa_label = self.t("papers_oa").to_string();
+            ui.add_enabled_ui(self.papers_src == Source::OpenAlex, |ui| {
+                ui.checkbox(&mut self.papers_oa, oa_label);
+            });
+            if before != (self.papers_src, self.papers_oa) && !self.papers_q.trim().is_empty() {
+                go = true;
+            }
+            if self.papers_busy {
+                ui.spinner();
+            }
+        });
+        if go {
+            self.papers_search(ui.ctx());
+        }
+        ui.add_space(4.0);
+        if let Some(e) = &self.papers_err {
+            ui.add(egui::Label::new(RichText::new(format!("{}: {e}", self.t("papers_failed"))).color(c.red)).wrap());
+        }
+        if self.papers_res.is_empty() && !self.papers_busy {
+            ui.add_space(20.0);
+            ui.colored_label(c.ink2, self.t("papers_empty"));
+            ui.horizontal_wrapped(|ui| {
+                for q in ["helium planet formation", "aquaponics nitrogen cycle", "general semantics", "resource based economy", "KiCad PCB"] {
+                    if ui.small_button(q).clicked() {
+                        self.papers_q = q.to_string();
+                        self.papers_search(ui.ctx());
+                    }
+                }
+            });
+            return;
+        }
+        let res = self.papers_res.clone();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for (i, p) in res.iter().enumerate() {
+                egui::Frame::none().fill(c.surface).stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(RichText::new(&p.title).color(c.ink).b().size(15.0)).wrap());
+                    let mut meta = p.authors_short();
+                    if let Some(y) = p.year {
+                        meta.push_str(&format!(" · {y}"));
+                    }
+                    if !p.venue.is_empty() {
+                        meta.push_str(&format!(" · {}", p.venue));
+                    }
+                    if let Some(n) = p.cited {
+                        meta.push_str(&format!(" · {}", self.t("papers_cited").replace("{n}", &n.to_string())));
+                    }
+                    ui.add(egui::Label::new(RichText::new(meta).color(c.ink2).small()).wrap());
+                    if !p.summary.is_empty() {
+                        let open = self.papers_expanded.contains(&i);
+                        let text = if open || p.summary.chars().count() <= 320 { p.summary.clone() } else { format!("{}…", p.summary.chars().take(320).collect::<String>()) };
+                        ui.add(egui::Label::new(RichText::new(text).color(c.ink)).wrap());
+                        if p.summary.chars().count() > 320 && ui.link(if open { self.t("papers_less") } else { self.t("papers_more") }).clicked() {
+                            if open {
+                                self.papers_expanded.remove(&i);
+                            } else {
+                                self.papers_expanded.insert(i);
+                            }
+                        }
+                    }
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some(url) = &p.pdf {
+                            let busy = self.papers_pending.contains_key(url);
+                            if ui.add_enabled(!busy, egui::Button::new(RichText::new(self.t("papers_read")).color(c.on_accent)).fill(c.accent)).clicked() {
+                                self.papers_pending.insert(url.clone(), (p.clone(), false));
+                                self.papers.fetch_pdf(url.clone(), ui.ctx().clone());
+                            }
+                            if ui.add_enabled(!busy, egui::Button::new(self.t("papers_send_pdf"))).clicked() {
+                                self.papers_pending.insert(url.clone(), (p.clone(), true));
+                                self.papers.fetch_pdf(url.clone(), ui.ctx().clone());
+                            }
+                            if busy {
+                                ui.spinner();
+                            }
+                        } else {
+                            ui.colored_label(c.ink2, RichText::new(self.t("papers_no_pdf")).small());
+                        }
+                        if ui.button(self.t("papers_link")).clicked() {
+                            self.input = p.citation();
+                            self.focus_input = 3;
+                            self.show_papers = false;
+                        }
+                        if !p.page.is_empty() && ui.button(self.t("papers_page")).clicked() {
+                            open_path(std::path::Path::new(&p.page));
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+            }
+        });
+    }
+
+    /// Settings → About: check, download, install, restart.
+    fn update_section(&mut self, ui: &mut egui::Ui) {
+        use crate::update::State;
+        let c = th();
+        ui.label(RichText::new(self.t("upd_h").to_uppercase()).color(c.ink2).size(12.0).b());
+        let st = self.updater.get();
+        ui.horizontal_wrapped(|ui| {
+            let busy = matches!(st, State::Checking | State::Downloading(_) | State::Installing(_));
+            if ui.add_enabled(!busy, egui::Button::new(self.t("upd_check"))).clicked() {
+                self.updater.check(ui.ctx().clone(), false);
+            }
+            let mut on = self.settings.update_check;
+            if ui.checkbox(&mut on, self.t("upd_auto")).changed() {
+                self.settings.update_check = on;
+                store::save_settings(&self.settings);
+            }
+            if ui.button(self.t("upd_backups")).clicked() {
+                let d = crate::update::backups_dir();
+                let _ = std::fs::create_dir_all(&d);
+                open_path(&d);
+            }
+        });
+        match st {
+            State::Idle => {}
+            State::Checking => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.colored_label(c.ink2, self.t("upd_checking"));
+                });
+            }
+            State::UpToDate => {
+                ui.colored_label(c.green_text, self.t("upd_latest").replace("{v}", VERSION));
+            }
+            State::Available(r) => {
+                egui::Frame::none().fill(c.card).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+                    ui.label(RichText::new(self.t("upd_avail").replace("{v}", &r.version).replace("{c}", &crate::update::local_version())).color(c.ink).b());
+                    let notes: String = r.notes.lines().filter(|l| !l.trim().is_empty()).take(8).collect::<Vec<_>>().join("\n");
+                    if !notes.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(notes).color(c.ink2).small()).wrap());
+                    }
+                    ui.add(egui::Label::new(RichText::new(self.t("upd_safe")).color(c.ink2).small()).wrap());
+                    ui.horizontal(|ui| {
+                        if r.asset.is_some() && ui.add(egui::Button::new(RichText::new(self.t("upd_install")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                            self.updater.install(ui.ctx().clone(), r.clone());
+                        }
+                        if ui.button(self.t("upd_page")).clicked() {
+                            open_path(std::path::Path::new(&r.page));
+                        }
+                    });
+                });
+            }
+            State::Downloading(_) => {
+                let done = self.updater.done.load(std::sync::atomic::Ordering::Relaxed);
+                let total = self.updater.total.load(std::sync::atomic::Ordering::Relaxed).max(1);
+                ui.add(egui::ProgressBar::new(done as f32 / total as f32).text(format!("{} {} / {}", self.t("upd_downloading"), human_size(done), human_size(total))));
+            }
+            State::Installing(_) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.colored_label(c.ink2, self.t("upd_installing"));
+                });
+            }
+            State::Ready(v, backup) => {
+                ui.colored_label(c.green_text, self.t("upd_ready").replace("{v}", &v));
+                ui.colored_label(c.ink2, RichText::new(format!("{}: {}", self.t("upd_backup_at"), backup.display())).small());
+                if ui.add(egui::Button::new(RichText::new(self.t("upd_restart")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                    crate::dev::stop_all();
+                    let _ = self.handle.cmd_tx.send(Cmd::Quit);
+                    crate::update::restart();
+                }
+            }
+            State::Failed(e) => {
+                ui.add(egui::Label::new(RichText::new(format!("{}: {e}", self.t("upd_failed"))).color(c.red)).wrap());
+                if ui.button(self.t("upd_page")).clicked() {
+                    open_path(std::path::Path::new(crate::update::RELEASES_PAGE));
+                }
+            }
+        }
+    }
+
+    fn dev_on(&self) -> bool {
+        self.settings.dev || std::env::var("CYBERCORD_DEV").is_ok()
+    }
+
+    /// The room test bots join: mine, or the first voice room of this server.
+    fn dev_room(&self) -> String {
+        self.in_voice.clone().unwrap_or_else(|| {
+            let s = &SERVERS[self.sel_server];
+            format!("{}/{}", s.slug, s.voice.first().copied().unwrap_or("lounge"))
+        })
+    }
+
+    /// Developer mode: test voice on one computer.
+    fn dev_window(&mut self, ctx: &egui::Context) {
+        if !self.show_dev {
+            return;
+        }
+        if !self.dev_on() {
+            self.show_dev = false;
+            return;
+        }
+        let c = th();
+        let room = self.dev_room();
+        let mut open = true;
+        egui::Window::new(self.t("devm_title")).open(&mut open).resizable(false).collapsible(true).default_pos(egui::pos2(360.0, 80.0)).order(Order::Foreground).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.label(RichText::new(self.t("devm_voice_h")).color(c.ink).b().size(16.0));
+            ui.add(egui::Label::new(RichText::new(self.t("devm_voice_info")).color(c.ink2)).wrap());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{}: ", self.t("devm_room"))).color(c.ink2));
+                let (g, ch) = room.split_once('/').unwrap_or((room.as_str(), ""));
+                let label = format!("{} / {}", SERVERS.iter().find(|s| s.slug == g).map(|s| s.name).unwrap_or(g), self.ch_label(ch));
+                ui.label(RichText::new(label).color(c.ink).b());
+                if self.in_voice.is_none() && ui.button(self.t("devm_join")).clicked() {
+                    let (g, ch) = room.split_once('/').unwrap_or((room.as_str(), ""));
+                    let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::new(g, ch) });
+                }
+            });
+            ui.add_space(6.0);
+            let boot = crate::dev::loopback_addr(&self.listen_addrs);
+            if boot.is_none() {
+                ui.colored_label(c.red, self.t("devm_no_addr"));
+            }
+            for kind in crate::dev::KINDS {
+                ui.horizontal(|ui| {
+                    let on = crate::dev::running(kind);
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 5.0, if on { c.green } else { c.line });
+                    ui.vertical(|ui| {
+                        ui.set_width(390.0);
+                        ui.label(RichText::new(self.td(&format!("devm_{kind}"))).color(c.ink).b());
+                        ui.add(egui::Label::new(RichText::new(self.td(&format!("devm_{kind}_d"))).color(c.ink2).small()).wrap());
+                    });
+                    if on {
+                        if ui.button(self.t("devm_stop")).clicked() {
+                            crate::dev::stop(kind);
+                        }
+                    } else if ui.add_enabled(boot.is_some(), egui::Button::new(RichText::new(self.t("devm_start")).color(c.on_accent)).fill(c.accent)).clicked() {
+                        let name = self.td(&format!("devm_{kind}_name"));
+                        if let Err(e) = crate::dev::start(kind, &name, &room, boot.clone(), &self.settings) {
+                            self.toast(format!("{}: {e}", self.t("devm_title")));
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+            }
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(self.t("devm_headphones")).color(c.accent)).wrap());
+            ui.separator();
+            // live counters
+            ui.label(RichText::new(self.t("devm_stats")).color(c.ink2).small().b());
+            match (&self.in_voice, self.voice_stats) {
+                (Some(_), Some((s, r, b))) => {
+                    ui.label(self.t("devm_stats_line").replace("{s}", &(s / 5).to_string()).replace("{r}", &(r / 5).to_string()).replace("{b}", &b.to_string()));
+                }
+                _ => {
+                    ui.colored_label(c.ink2, self.t("devm_not_in_voice"));
+                }
+            }
+            let now = now_ms();
+            let talking: Vec<String> = self.talkers.iter().filter(|(_, t)| now.saturating_sub(**t) < 800).map(|(n, _)| n.clone()).collect();
+            let in_room: Vec<String> = self.roster.values().filter(|(_, r, _)| r.as_deref() == Some(room.as_str())).map(|(n, _, _)| n.clone()).collect();
+            ui.label(format!("{}: {}", self.t("devm_in_room"), if in_room.is_empty() { "—".to_string() } else { in_room.join(", ") }));
+            ui.label(format!("{}: {}", self.t("devm_talking"), if talking.is_empty() { "—".to_string() } else { talking.join(", ") }));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button(self.t("devm_stop_all")).clicked() {
+                    crate::dev::stop_all();
+                }
+                if ui.button(self.t("devm_logs")).clicked() {
+                    let d = cybercord_node::store::data_dir().join("dev");
+                    let _ = std::fs::create_dir_all(&d);
+                    open_path(&d);
+                }
+            });
+        });
+        if !open {
+            self.show_dev = false;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 
     /// A user's index code, if they have one and codes are shown.
@@ -3860,6 +4311,7 @@ const BUILTIN_GIFS: [&[u8]; 5] = [
 const SYM_IMAGE: &[u8] = include_bytes!("../assets/symbolic/image.png");
 const SYM_SIGMA: &[u8] = include_bytes!("../assets/symbolic/sigma.png");
 const CITY_TILE: &[u8] = include_bytes!("../assets/emoji/sce/sce_city.png");
+const PAPERS_TILE: &[u8] = include_bytes!("../assets/emoji/sce/sce_science.png");
 const SUBS_TILE: &[u8] = include_bytes!("../assets/emoji/sce/sce_nodes.png");
 const SYM_LEVELS: &[u8] = include_bytes!("../assets/symbolic/levels.png");
 const DOC_SD: &[u8] = include_bytes!("../assets/docs/structural-differential.png");
@@ -4771,6 +5223,26 @@ impl CyberApp {
                 }
             }
         });
+        ui.add_space(14.0);
+        self.update_section(ui);
+        ui.add_space(14.0);
+        ui.label(RichText::new(self.t("devm_title").to_uppercase()).color(c.ink2).size(12.0).b());
+        ui.horizontal(|ui| {
+            let mut on = self.settings.dev;
+            if ui.checkbox(&mut on, self.t("devm_toggle")).changed() {
+                self.settings.dev = on;
+                if !on {
+                    crate::dev::stop_all();
+                    self.show_dev = false;
+                }
+                store::save_settings(&self.settings);
+            }
+            if self.dev_on() && ui.button(self.t("devm_open")).clicked() {
+                self.show_dev = true;
+                self.show_settings = false;
+            }
+        });
+        ui.add(egui::Label::new(RichText::new(self.t("devm_about")).color(c.ink2).small()).wrap());
         ui.add_space(10.0);
         ui.colored_label(c.ink2, RichText::new(self.t("twemoji_credit")).small());
         ui.colored_label(c.ink2, RichText::new(self.t("fonts_credit")).small());
@@ -5137,6 +5609,7 @@ impl CyberApp {
             self.show_home = false;
             self.show_map = false;
                             self.show_city = false;
+                            self.show_papers = false;
                             self.show_subs = false;
         }
     }
@@ -5500,6 +5973,7 @@ fn spawn_tray_router(
                     }
                     TrayCmd::Quit => {
                         quitting.store(true, std::sync::atomic::Ordering::SeqCst);
+                        crate::dev::stop_all();
                         let _ = net.send(Cmd::Quit);
                         // A hidden window runs no frames (Windows), so the normal close may
                         // never happen: give the node a moment to finish, then exit. All data

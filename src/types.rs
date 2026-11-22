@@ -304,6 +304,9 @@ pub struct VoiceFrame {
     pub name: String,
     pub seq: u32,
     pub pcm: Vec<i16>,
+    /// Sent by a developer test bot (echo bots never repeat bots).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot: bool,
 }
 
 /// Everything that travels over gossip, on a channel, voice or control topic.
