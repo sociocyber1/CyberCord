@@ -16,6 +16,8 @@ Cybernetics studies how systems steer themselves through feedback. Sociocybernet
 - cities designed as a whole, such as Fresco's circular cities;
 - precise language as the basis of understanding (here Fresco is close to Korzybski).
 
+- [Jacque Fresco and The Venus Project (PDF, in Russian)](../assets/pdf/venus-project.pdf)
+
 ## Jacque Fresco (1916–2017)
 
 American industrial designer and futurist. Together with Roxanne Meadows he created The Venus Project in Florida: a research centre, city models and lectures on how technology and science can work for all people.
@@ -36,6 +38,8 @@ Make 3D visualisations in Claude: a complex idea is easier to discuss when you c
 ## Video about the project
 
 - [SocioCyberneering on YouTube](https://www.youtube.com/watch?v=258cx_PsrRA)
+- [Jacque Fresco and The Venus Project (PDF, in Russian)](../assets/pdf/venus-project.pdf)
+- [The Science of Man: General Semantics — what it is and why (PDF, in Russian)](../assets/pdf/general-semantics.pdf)
 - [General semantics — materials (archive.org)](https://archive.org/details/general-semantic-2024)
 
 Special thanks to Mikhail Korotkov for the translations.

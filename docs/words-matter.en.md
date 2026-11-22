@@ -40,12 +40,18 @@ Build bridges and we build the project itself. Break things and nothing will wor
 
 An engineer from Poland who fought in the First World War. Having seen that war, he asked why human technology advances so fast while human relations advance so slowly. The answers became *Manhood of Humanity* (1921), on *time-binding*, the human ability to pass experience on to the next generations, and *Science and Sanity* (1933), the basis of general semantics. In 1938 he founded the Institute of General Semantics.
 
+- [The Science of Man: General Semantics — what it is and why (PDF, in Russian)](../assets/pdf/general-semantics.pdf)
+
 ## Jacque Fresco (1916–2017)
 
 Industrial designer and futurist, creator of The Venus Project. He proposed applying the scientific method to social problems and spoke a lot about language: imprecise words lead to imprecise decisions. More in the document about SocioCyberneering Inc.
 
+- [Jacque Fresco and The Venus Project (PDF, in Russian)](../assets/pdf/venus-project.pdf)
+
 ## Further reading
 
+- [The Science of Man: General Semantics — what it is and why (PDF, in Russian)](../assets/pdf/general-semantics.pdf)
+- [Jacque Fresco and The Venus Project (PDF, in Russian)](../assets/pdf/venus-project.pdf)
 - [General semantics — materials (archive.org)](https://archive.org/details/general-semantic-2024)
 
 Special thanks to Mikhail Korotkov for the translations.

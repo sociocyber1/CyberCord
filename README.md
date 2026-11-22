@@ -2,8 +2,14 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.13</h1>
-<p align="center"><b>Чат, голос, музыка и видео-кружки без серверов</b> — SocioCyberneering Inc. Communication Cooperations</p>
+<h1 align="center">CyberCord 0.14</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
+    <img src="assets/brand/wordmark-dark.svg" height="30" alt="SocioCyberneering Inc.">
+  </picture>
+</p>
+<p align="center"><b>Чат, голос, музыка и видео-кружки без серверов</b> — Communication Cooperations</p>
 
 ## Суть проекта
 
@@ -30,6 +36,10 @@ CyberCord покажет только вам короткий текст о то
 English: [Words are not people](docs/words-matter.en.md) ·
 [The price of words](docs/consequences.en.md) ·
 [About SocioCyberneering Inc.](docs/sociocyberneering.en.md)
+
+**Читать (PDF, встроены в приложение):**
+[Жак Фреско и Проект Венера](assets/pdf/venus-project.pdf) ·
+[Наука о Человеке: Общая семантика — что это и зачем нужно?](assets/pdf/general-semantics.pdf)
 
 Материалы по общей семантике:
 [archive.org/details/general-semantic-2024](https://archive.org/details/general-semantic-2024).
@@ -87,7 +97,30 @@ CyberCord похож на Discord, но у него нет центрально�
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
 
-## Что нового в 0.13 — экстенсиональная переписка
+## Что нового в 0.14
+
+- **Индексы — не только ₁.** Кнопка «Индекс» сама берёт следующий
+  свободный номер: если в чате уже есть Иван₁ и Иван₃, предложит Иван₄. У
+  слова с индексом — следующий (Иван₂ → Иван₃). Кнопка «№» открывает выбор
+  ₁…₉ и «убрать индекс».
+- **Анимация «взлом» в духе Watch Dogs:** новое сообщение проступает из
+  случайных символов, затем короткий глитч (смещение цветов) — меньше
+  секунды. Так же появляется название SocioCyberneering Inc. при запуске.
+  Отключается: Настройки → Внешний вид.
+- **Фирменный шрифт:** «SocioCyberneering Inc.» везде набирается Montserrat
+  с разрядкой — в приложении, на баннере, в README (`assets/brand/`).
+- **Читалка PDF** (pure Rust, hayro): листание, масштаб, «Сохранить»,
+  «Открыть в системе». Встроены два документа — «Жак Фреско и Проект Венера»
+  и «Наука о Человеке: Общая семантика — что это и зачем нужно?»; ссылки на
+  них стоят там, где о них говорится (тексты о Коржибски и Фреско, «О
+  SocioCyberneering Inc.», О программе). Скачанные в чате PDF тоже
+  открываются кнопкой «Читать».
+
+![Читалка PDF](docs/img/screen-pdf.png)
+
+![«Взлом» нового сообщения](docs/img/screen-hack-fx.png)
+
+## Что было в 0.13 — экстенсиональная переписка
 
 Главное внимание — чатам: говорить ближе к фактам и не прыгать к выводам.
 Ничего не блокируется, всё работает локально. Подробно —
@@ -350,12 +383,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.13.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.14.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.13.0-linux-x86_64.tar.gz
-cd cybercord-0.13.0-linux-x86_64
+tar xf cybercord-0.14.0-linux-x86_64.tar.gz
+cd cybercord-0.14.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -548,6 +581,9 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
   участники, CC-BY 4.0.
 - Шрифт: [Inter](https://rsms.me/inter/), © The Inter Project Authors, SIL OFL 1.1
   (`assets/fonts/LICENSE-Inter.txt`).
+- Фирменный шрифт: [Montserrat](https://github.com/JulietaUla/Montserrat),
+  © The Montserrat Project Authors, SIL OFL 1.1 (`assets/fonts/LICENSE-Montserrat.txt`).
+- Чтение PDF: [hayro](https://github.com/LaurenzV/hayro), Apache-2.0 / MIT.
 - Иконки серверов и иллюстрации: SocioCyberneering Inc., нарисованы для
   CyberCord (`tools/make_icons.py`, `tools/make_guide.py`,
   `tools/make_docs_art.py`, `tools/make_readme_art.py`, `tools/make_emoji.py`, `tools/make_gifs.py`).
@@ -555,6 +591,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.14:** smart indices (next free number from the chat, or pick ₁…₉), a short Watch Dogs-style "hacked text" + glitch animation for new messages (can be turned off), the SocioCyberneering Inc. brand always set in Montserrat, and a built-in PDF reader (hayro) with two embedded documents (in Russian) linked wherever they are mentioned.
 
 **0.13 — extensional chat:** select a word for an index₁, today's date, safety quotes, etc., hyphen or "to me"; live hints for allness, labels on people, mind reading, either-or, jumping to conclusions, loaded evaluations and demands; a "the conversation is heating up — check facts, test hypotheses" banner; dogmatic/cult-like wordings flagged ("we go by science"); a "levels of abstraction" view per message (structural differential: description / inference / evaluation); problem-solving blocks (check lists, tables, pros/cons, six steps, SMART, fact check) rendered in chat; multi-line composer; 20 own general-semantics/SocioCyberneering emoji and 5 animated stickers. Nothing is blocked; everything runs locally ([details, ru](docs/EXTENSIONAL.md)).
 

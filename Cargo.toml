@@ -1,6 +1,6 @@
 [package]
 name = "cybercord-node"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 description = "CyberCord — serverless peer-to-peer chat (SocioCyberneering Inc.)"
 license = "MIT OR Apache-2.0"
@@ -41,6 +41,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg"] }
 # Music messages: pure-Rust decoding of mp3 / flac / ogg-vorbis / wav / m4a-aac.
 mainline = "8"
+hayro = "0.9"
 # Desktop notifications (D-Bus on Linux, toast on Windows).
 notify-rust = "4"
 # Torrent-like file transfer messages.

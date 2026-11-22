@@ -305,6 +305,9 @@ pub struct Settings {
     pub words_hints: bool,
     #[serde(default)]
     pub words_count: u32,
+    /// "Hacked text" animation for new messages (and the brand on start).
+    #[serde(default = "yes")]
+    pub hack_fx: bool,
 }
 
 fn hundred() -> f32 {

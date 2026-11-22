@@ -173,11 +173,30 @@ fn inline_job(text: &str, size: f32, color: Color32, width: f32) -> LayoutJob {
 }
 
 /// Draw a document. `tex` turns an embedded PNG into a texture.
-pub fn show(ui: &mut egui::Ui, md: &str, tex: &mut dyn FnMut(&egui::Context, &'static str, &'static [u8]) -> egui::TextureId) {
+/// The brand name, always in Montserrat with wide letter spacing.
+pub fn brand(ui: &mut egui::Ui, text: &str, size: f32, color: Color32) -> egui::Response {
+    let mut job = LayoutJob::default();
+    job.append(text, 0.0, TextFormat { font_id: FontId::new(size, FontFamily::Name("brand".into())), color, extra_letter_spacing: size * 0.12, ..Default::default() });
+    ui.label(job)
+}
+
+/// A link to a file shipped with the docs (e.g. a PDF): opened in the app.
+fn internal(url: &str) -> bool {
+    !url.contains("://") && url.ends_with(".pdf")
+}
+
+/// Draw a document. `tex` turns an embedded PNG into a texture. Returns the
+/// target of a clicked internal link (a built-in PDF), if any.
+pub fn show(ui: &mut egui::Ui, md: &str, tex: &mut dyn FnMut(&egui::Context, &'static str, &'static [u8]) -> egui::TextureId) -> Option<String> {
     let c = th();
     let w = ui.available_width();
+    let mut clicked: Option<String> = None;
     for b in parse(md) {
         match b {
+            Block::H1(t) if t == "SocioCyberneering Inc." => {
+                brand(ui, t, 26.0, c.ink);
+                ui.add_space(10.0);
+            }
             Block::H1(t) => {
                 ui.add(egui::Label::new(RichText::new(t).color(c.ink).size(26.0).family(FontFamily::Name("bold".into()))).wrap());
                 ui.add_space(10.0);
@@ -195,13 +214,23 @@ pub fn show(ui: &mut egui::Ui, md: &str, tex: &mut dyn FnMut(&egui::Context, &'s
                 ui.horizontal_top(|ui| {
                     ui.add_space(6.0);
                     ui.label(RichText::new("•").color(c.accent).size(15.0));
-                    if let Some((text, url)) = whole_link(t) {
+                    if let Some((text, url)) = whole_link(t).filter(|(_, u)| internal(u)) {
+                        if ui.link(RichText::new(format!("PDF · {text}")).size(15.0).color(c.accent)).clicked() {
+                            clicked = Some(url.to_string());
+                        }
+                    } else if let Some((text, url)) = whole_link(t) {
                         ui.hyperlink_to(RichText::new(text).size(15.0).color(c.accent), url).on_hover_text(url);
                     } else {
                         ui.add(egui::Label::new(inline_job(t, 15.0, c.ink, w - 28.0)).wrap());
                     }
                 });
                 ui.add_space(3.0);
+            }
+            Block::Link(text, url) if internal(url) => {
+                if ui.link(RichText::new(format!("PDF · {text}")).size(15.0).color(c.accent)).clicked() {
+                    clicked = Some(url.to_string());
+                }
+                ui.add_space(6.0);
             }
             Block::Link(text, url) => {
                 ui.hyperlink_to(RichText::new(text).size(15.0).color(c.accent), url).on_hover_text(url);
@@ -225,6 +254,7 @@ pub fn show(ui: &mut egui::Ui, md: &str, tex: &mut dyn FnMut(&egui::Context, &'s
             }
         }
     }
+    clicked
 }
 
 #[cfg(test)]

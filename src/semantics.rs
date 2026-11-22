@@ -257,6 +257,39 @@ pub fn index(word: &str) -> String {
     format!("{base}{}", n.to_string().chars().map(|c| SUB[c.to_digit(10).unwrap_or(0) as usize]).collect::<String>())
 }
 
+/// Split "Иван₁₂" into ("Иван", Some(12)).
+pub fn split_index(word: &str) -> (&str, Option<u32>) {
+    let base = word.trim_end_matches(|c| SUB.contains(&c));
+    let digits: String = word[base.len()..].chars().filter_map(|c| SUB.iter().position(|s| *s == c)).map(|d| char::from_digit(d as u32, 10).unwrap_or('0')).collect();
+    (base, digits.parse().ok())
+}
+
+/// "Иван" + 3 → "Иван₃".
+pub fn with_index(base: &str, n: u32) -> String {
+    format!("{base}{}", n.to_string().chars().map(|c| SUB[c.to_digit(10).unwrap_or(0) as usize]).collect::<String>())
+}
+
+/// The index to give `word` next: if it has one, the following number;
+/// otherwise one more than the largest index of the same word in `context`
+/// (the draft and the recent messages), so Иван₁ in the chat makes Иван₂.
+pub fn next_index(word: &str, context: &str) -> u32 {
+    let (base, own) = split_index(word);
+    if let Some(n) = own {
+        return n + 1;
+    }
+    let low = base.to_lowercase();
+    let mut max = 0;
+    for tok in context.split(|c: char| !(c.is_alphanumeric() || SUB.contains(&c) || c == '-')) {
+        let (b, n) = split_index(tok);
+        if let Some(n) = n {
+            if b.to_lowercase() == low {
+                max = max.max(n);
+            }
+        }
+    }
+    max + 1
+}
+
 /// Append a date in superscript (dating: Иван²⁰²⁶ ≠ Иван²⁰¹⁶): "²¹·¹¹·²⁰²⁶".
 pub fn date(word: &str, day: u32, month: u32, year: i32) -> String {
     let sup = |s: String| s.chars().map(|c| c.to_digit(10).map(|d| SUP[d as usize]).unwrap_or(c)).collect::<String>();
@@ -312,6 +345,11 @@ mod tests {
     fn devices() {
         assert_eq!(index("Иван"), "Иван₁");
         assert_eq!(index("Иван₉"), "Иван₁₀");
+        assert_eq!(next_index("Иван", "вчера Иван₁ сказал, а Иван₃ нет"), 4);
+        assert_eq!(next_index("иван", "привет"), 1);
+        assert_eq!(next_index("Иван₂", "Иван₇"), 3);
+        assert_eq!(split_index("Иван₁₂"), ("Иван", Some(12)));
+        assert_eq!(with_index("Иван", 5), "Иван₅");
         assert_eq!(date("Иван", 21, 11, 2026), "Иван²¹·¹¹·²⁰²⁶");
         assert_eq!(quote("ум"), "«ум»");
         assert_eq!(hyphen("пространство время"), "пространство-время");

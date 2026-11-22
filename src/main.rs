@@ -5,6 +5,8 @@
 mod app;
 mod camera;
 mod docs;
+mod fx;
+mod pdfview;
 mod emoji;
 mod i18n;
 mod media;

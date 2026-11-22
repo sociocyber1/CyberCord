@@ -382,3 +382,14 @@ ext_tome_tip	To-me: an evaluation belongs to the one who makes it.	«Для ме
 ext_tome_text	(to me)	(для меня)	(для мене)					
 cat_sce	SocioCyberneering & general semantics	SocioCyberneering и общая семантика	SocioCyberneering і загальна семантика	SocioCyberneering & Allgemeine Semantik	SocioCyberneering y semántica general	SocioCyberneering et sémantique générale	SocioCyberneering 与普通语义学	SocioCyberneering と一般意味論
 sce_gifs	SocioCyberneering stickers	Стикеры SocioCyberneering	Стікери SocioCyberneering	SocioCyberneering-Sticker	Stickers de SocioCyberneering	Autocollants SocioCyberneering	SocioCyberneering 贴纸	SocioCyberneering ステッカー
+fx_opt	“Hacked text” animation for new messages (Watch Dogs style)	Анимация «взлом» для новых сообщений (как в Watch Dogs)	Анімація «злам» для нових повідомлень (як у Watch Dogs)					
+pdf_venus	Jacque Fresco and The Venus Project	Жак Фреско и Проект Венера	Жак Фреско і Проєкт Венера					
+pdf_gs	General semantics: what and why	Общая семантика — что это и зачем	Загальна семантика — що це і навіщо					
+pdf_save	Save	Сохранить	Зберегти					
+pdf_open	Open in system	Открыть в системе	Відкрити в системі					
+pdf_page	Page	Стр.	Стор.					
+pdf_cannot	Cannot open this PDF	Не удалось открыть PDF	Не вдалося відкрити PDF					
+pdf_saved	Saved: {path}	Сохранено: {path}	Збережено: {path}					
+pdf_read	Read	Читать	Читати					
+ext_index_none	Remove index	Убрать индекс	Прибрати індекс					
+ext_index_pick	Choose the index	Выбрать индекс	Вибрати індекс					

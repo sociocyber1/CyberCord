@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """README art: hero banner and the "100 people in one voice channel" scheme."""
-import math, os, random, subprocess
+import math, os, random, subprocess, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from brandfont import text_path as brand_path
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(root, "docs", "img"); os.makedirs(OUT, exist_ok=True)
 F = "Inter, Cantarell, 'Noto Sans', sans-serif"
@@ -83,7 +85,7 @@ def hero(lang):
     T = {"ru": ["Сеть, которую держат люди", "Без серверов. Без банов. Без лимитов.", "Вы отвечаете за будущее."],
          "en": ["A network held by people", "No servers. No bans. No limits.", "You are responsible for the future."]}[lang]
     b = f'<rect width="{W}" height="{H}" rx="24" fill="url(#hero)"/><circle cx="740" cy="160" r="220" fill="url(#glow)"/>'
-    b += f'<text x="48" y="92" font-family="{F}" font-size="18" font-weight="700" fill="#fff" opacity=".8" letter-spacing="2">SOCIOCYBERNEERING INC. · CYBERCORD</text>'
+    b += brand_path("SocioCyberneering Inc.", 48, 92, 20, fill="#fff", opacity=0.92)[0]
     b += f'<text x="48" y="148" font-family="{F}" font-size="38" font-weight="800" fill="#fff">{T[0]}</text>'
     b += f'<text x="48" y="194" font-family="{F}" font-size="22" fill="#fff" opacity=".95">{T[1]}</text>'
     b += f'<text x="48" y="232" font-family="{F}" font-size="22" font-weight="700" fill="{YEL}">{T[2]}</text>'

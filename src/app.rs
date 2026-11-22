@@ -212,6 +212,12 @@ pub struct CyberApp {
     /// conversation banners hidden until …
     banner_hidden: HashMap<ChannelId, Instant>,
     builtin_gifs: Vec<String>,
+    /// messages playing the "hacked text" effect, and when it started
+    anims: HashMap<String, Instant>,
+    started: Instant,
+    /// open PDF reader
+    pdf: Option<crate::pdfview::PdfView>,
+    index_pick: bool,
     words_toast_at: Option<Instant>,
 }
 
@@ -327,6 +333,10 @@ impl CyberApp {
             analyze: None,
             banner_hidden: HashMap::new(),
             builtin_gifs: Vec::new(),
+            anims: HashMap::new(),
+            started: Instant::now(),
+            pdf: None,
+            index_pick: false,
             words_toast_at: None,
             mic_test_msg: None,
             test_player: None,
@@ -361,6 +371,7 @@ impl CyberApp {
                         self.show_home = false;
                     }
                     p if p.starts_with("doc:") => self.doc_open = Doc::from_id(&p[4..]),
+                    p if p.starts_with("pdf:") => self.open_builtin_pdf(if &p[4..] == "gs" { "general-semantics.pdf" } else { "venus-project.pdf" }),
                     "wordstab" => {
                         self.show_settings = true;
                         self.set_tab = SetTab::Help;
@@ -482,6 +493,9 @@ impl CyberApp {
                 }
                 UiEvent::Status(s) => self.status = s,
                 UiEvent::Chat(ev) => {
+                    if self.settings.hack_fx && ev.ts_ms + 10_000 > now_ms() && !ev.deleted {
+                        self.anims.insert(ev.edits.clone().unwrap_or_else(|| ev.id.clone()), Instant::now());
+                    }
                     let view = self.views.entry(ev.channel.clone()).or_default();
                     view.add(ev);
                     view.msgs.sort_by_key(|m| m.ts_ms);
@@ -632,7 +646,11 @@ impl CyberApp {
 
     /// The document reader, drawn over everything (also over settings).
     fn doc_overlay(&mut self, ctx: &egui::Context) {
+        if self.pdf.is_some() {
+            return;
+        }
         let Some(doc) = self.doc_open else { return };
+        let mut open_link: Option<String> = None;
         let c = th();
         let screen = ctx.screen_rect();
         let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
@@ -654,8 +672,11 @@ impl CyberApp {
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
                     ui.set_height(48.0);
-                    let head = if doc == Doc::Sce { "SocioCyberneering Inc." } else { self.t("words_h") };
-                    ui.label(RichText::new(head).color(c.ink2).size(13.0).b());
+                    if doc == Doc::Sce {
+                        docs::brand(ui, "SocioCyberneering Inc.", 13.0, c.ink2);
+                    } else {
+                        ui.label(RichText::new(self.t("words_h")).color(c.ink2).size(13.0).b());
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
                         if ui.add(egui::Button::new(RichText::new(self.t("close")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(96.0, 30.0))).clicked() {
@@ -667,7 +688,9 @@ impl CyberApp {
                 egui::ScrollArea::vertical().id_salt(("doc", doc as u8)).auto_shrink([false, false]).show(ui, |ui| {
                     egui::Frame::none().inner_margin(egui::Margin { left: 32.0, right: 32.0, top: 22.0, bottom: 28.0 }).show(ui, |ui| {
                         let icons = &mut self.icons;
-                        docs::show(ui, md, &mut |ctx, key, png| icons.get(ctx, key, png));
+                        if let Some(link) = docs::show(ui, md, &mut |ctx, key, png| icons.get(ctx, key, png)) {
+                            open_link = Some(link);
+                        }
                         ui.add_space(14.0);
                         if matches!(doc, Doc::WordsMatter | Doc::Consequences) {
                             ui.colored_label(c.ink2, RichText::new(self.t("words_private")).small());
@@ -678,6 +701,70 @@ impl CyberApp {
         });
         if close {
             self.doc_open = None;
+        }
+        if let Some(l) = open_link {
+            self.open_builtin_pdf(&l);
+        }
+    }
+
+    fn open_builtin_pdf(&mut self, file: &str) {
+        if let Some((title, name, bytes)) = crate::pdfview::builtin(file) {
+            self.pdf = Some(crate::pdfview::PdfView::open(title, name, Arc::new(bytes.to_vec())));
+        }
+    }
+
+    fn open_pdf_file(&mut self, path: &std::path::Path) {
+        match std::fs::read(path) {
+            Ok(b) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "document.pdf".into());
+                self.pdf = Some(crate::pdfview::PdfView::open(name.clone(), name, Arc::new(b)));
+            }
+            Err(e) => self.toast(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// The PDF reader, over everything.
+    fn pdf_overlay(&mut self, ctx: &egui::Context) {
+        if self.pdf.is_none() {
+            return;
+        }
+        let c = th();
+        let screen = ctx.screen_rect();
+        let labels = crate::pdfview::Labels { close: self.t("close"), save: self.t("pdf_save"), open: self.t("pdf_open"), page: self.t("pdf_page"), cannot: self.t("pdf_cannot") };
+        let mut act = crate::pdfview::Action::None;
+        egui::Area::new(Id::new("pdf_dim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            ui.allocate_rect(screen, egui::Sense::click());
+            ui.painter().rect_filled(screen, Rounding::ZERO, Color32::from_black_alpha(170));
+        });
+        let r = screen.shrink(16.0);
+        egui::Area::new(Id::new("pdf_win")).order(Order::Tooltip).fixed_pos(r.min).show(ctx, |ui| {
+            egui::Frame::none().fill(c.window).rounding(Rounding::same(12.0)).stroke(Stroke::new(1.0, c.line)).show(ui, |ui| {
+                ui.set_width(r.width());
+                ui.set_height(r.height());
+                if let Some(p) = self.pdf.as_mut() {
+                    act = p.show(ui, &labels);
+                }
+            });
+        });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            act = crate::pdfview::Action::Close;
+        }
+        match act {
+            crate::pdfview::Action::Close => self.pdf = None,
+            crate::pdfview::Action::Save | crate::pdfview::Action::OpenExternal => {
+                let Some(p) = self.pdf.as_ref() else { return };
+                let dir = cybercord_node::transfer::download_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join(&p.file_name);
+                let ok = path.exists() || std::fs::write(&path, p.bytes()).is_ok();
+                if matches!(act, crate::pdfview::Action::OpenExternal) && ok {
+                    open_path(&path);
+                } else if ok {
+                    let m = self.t("pdf_saved").replace("{path}", &path.display().to_string());
+                    self.toast(m);
+                }
+            }
+            crate::pdfview::Action::None => {}
         }
     }
 
@@ -934,6 +1021,7 @@ impl CyberApp {
 impl eframe::App for CyberApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.anims.retain(|_, t| t.elapsed().as_secs_f32() < 2.0);
         self.background_and_tray(ctx);
         self.media.poll(ctx);
         self.poll_music();
@@ -950,6 +1038,7 @@ impl eframe::App for CyberApp {
         if self.show_settings {
             self.settings_screen(ctx);
             self.doc_overlay(ctx);
+            self.pdf_overlay(ctx);
             self.draw_toast(ctx);
             ctx.request_repaint_after(Duration::from_millis(100));
             return;
@@ -1021,6 +1110,7 @@ impl eframe::App for CyberApp {
         self.recorder_overlay(ctx);
         self.doc_overlay(ctx);
         self.analyze_overlay(ctx);
+        self.pdf_overlay(ctx);
         self.draw_toast(ctx);
         self.draw_tour(ctx);
 
@@ -1291,8 +1381,13 @@ impl CyberApp {
                 ui.horizontal(|ui| {
                     let tex = self.icons.get(ui.ctx(), "app", APP_ICON);
                     ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(16.0, 16.0))));
-                    ui.label(RichText::new("SocioCyberneering").color(th().ink).b().small());
-                    ui.colored_label(th().ink2, RichText::new("Inc.").small());
+                    let t = self.started.elapsed().as_secs_f32() - 0.6;
+                    if self.settings.hack_fx && (0.0..crate::fx::TOTAL * 1.6).contains(&t) {
+                        crate::fx::label(ui, "SocioCyberneering Inc.", t / 1.6, 0x5ce, egui::FontId::new(12.0, egui::FontFamily::Name("brand".into())), th().ink, th().accent);
+                        ui.ctx().request_repaint();
+                    } else {
+                        docs::brand(ui, "SocioCyberneering Inc.", 12.0, th().ink);
+                    }
                     ui.separator();
                     let hub = self.hub.as_deref().map(short).unwrap_or_else(|| "—".into());
                     ui.colored_label(th().ink2, RichText::new(format!("{}: {hub}", self.t("hub_label"))).small());
@@ -1841,15 +1936,29 @@ impl CyberApp {
         }
         let picked: String = chars[a..b].iter().collect();
         let mut result: Option<String> = None;
+        // where to look for indices already used: the draft and the open channel
+        let mut context = self.input.clone();
+        if let Some(v) = self.views.get(&self.active_channel()) {
+            for m in v.msgs.iter().rev().take(80) {
+                context.push(' ');
+                context.push_str(&cybercord_node::history::resolve(m, &v.edits).body);
+            }
+        }
         let c = th();
-        let lift = if self.settings.words_hints && !sem::scan(&self.input).is_empty() { 74.0 } else { 44.0 };
+        let lift = if self.settings.words_hints && !sem::scan(&self.input).is_empty() { 74.0 } else { 44.0 } + if self.index_pick { 34.0 } else { 0.0 };
         egui::Area::new(Id::new("sel_tip")).order(Order::Foreground).fixed_pos(self.composer_rect.left_top() + egui::vec2(0.0, -lift)).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).fill(c.window).rounding(Rounding::same(10.0)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let now = chrono_today();
-                    let mut btn = |ui: &mut egui::Ui, label: String, tip: &str| ui.add(egui::Button::new(RichText::new(label).color(c.ink)).fill(c.card).rounding(Rounding::same(6.0))).on_hover_text(tip).clicked();
-                    if btn(ui, format!("{}₁", self.t("ext_index")), self.t("ext_index_tip")) {
-                        result = Some(sem::index(&picked));
+                    let btn = |ui: &mut egui::Ui, label: String, tip: &str| ui.add(egui::Button::new(RichText::new(label).color(c.ink)).fill(c.card).rounding(Rounding::same(6.0))).on_hover_text(tip).clicked();
+                    let core = picked.trim();
+                    let next = sem::next_index(core, &context);
+                    let (base, has) = sem::split_index(core);
+                    if btn(ui, format!("{}{}", self.t("ext_index"), subscript(next)), self.t("ext_index_tip")) {
+                        result = Some(picked.replacen(core, &sem::with_index(base, next), 1));
+                    }
+                    if btn(ui, "№".into(), self.t("ext_index_pick")) {
+                        self.index_pick = !self.index_pick;
                     }
                     if btn(ui, format!("{}²⁰²⁶", self.t("ext_date")), self.t("ext_date_tip")) {
                         result = Some(sem::date(&picked, now.0, now.1, now.2));
@@ -1867,6 +1976,20 @@ impl CyberApp {
                         result = Some(format!("{picked} {}", self.t("ext_tome_text")));
                     }
                 });
+                if self.index_pick {
+                    let core = picked.trim();
+                    let (base, has) = sem::split_index(core);
+                    ui.horizontal(|ui| {
+                        for n in 1..=9u32 {
+                            if ui.add(egui::Button::new(RichText::new(sem::with_index(base, n)).color(c.ink)).fill(c.card).rounding(Rounding::same(6.0))).clicked() {
+                                result = Some(picked.replacen(core, &sem::with_index(base, n), 1));
+                            }
+                        }
+                        if has.is_some() && ui.button(self.t("ext_index_none")).clicked() {
+                            result = Some(picked.replacen(core, base, 1));
+                        }
+                    });
+                }
             });
         });
         if let Some(r) = result {
@@ -1876,6 +1999,7 @@ impl CyberApp {
             s.extend(chars[b..].iter());
             self.input = s;
             self.sel = None;
+            self.index_pick = false;
             self.focus_input = 3;
             // put the caret after the changed word (drops the old selection)
             let id = Id::new("composer_input");
@@ -2026,6 +2150,12 @@ impl CyberApp {
                     ui.label(RichText::new("•").color(c.accent));
                     self.rich_text(ui, rest, c.ink, 14.0);
                 });
+            } else if let Some(at) = self.anims.get(id).map(|a| a.elapsed().as_secs_f32()).filter(|t| *t < crate::fx::TOTAL && !t.is_nan()) {
+                // "hacked text": noise resolves into the message, then a short glitch
+                let bold = t.len() > 4 && t.starts_with("**") && t.ends_with("**");
+                let font = if bold { egui::FontId::new(14.0, egui::FontFamily::Name("bold".into())) } else { egui::FontId::proportional(14.0) };
+                crate::fx::label(ui, if bold { t.trim_matches('*') } else { l }, at, crate::fx::seed_of(id) ^ i as u64, font, c.ink, c.accent);
+                ui.ctx().request_repaint();
             } else if t.len() > 4 && t.starts_with("**") && t.ends_with("**") {
                 ui.label(RichText::new(t.trim_matches('*')).color(c.ink).b());
             } else if t.is_empty() {
@@ -2870,6 +3000,9 @@ fn install_fonts(ctx: &egui::Context, lang: Lang) {
     let mut bold = vec!["inter-semibold".to_string()];
     bold.extend(base);
     fonts.families.insert(egui::FontFamily::Name("bold".into()), bold);
+    // brand lettering: "SocioCyberneering Inc." is always Montserrat
+    fonts.font_data.insert("montserrat".into(), egui::FontData::from_static(include_bytes!("../assets/fonts/Montserrat-Regular.ttf")));
+    fonts.families.insert(egui::FontFamily::Name("brand".into()), vec!["montserrat".into(), "inter".into()]);
     let candidates = [
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -3412,6 +3545,11 @@ impl CyberApp {
 
     fn tab_appearance(&mut self, ui: &mut egui::Ui) {
         let c = th();
+        let label = self.t("fx_opt");
+        if ui.checkbox(&mut self.settings.hack_fx, label).changed() {
+            store::save_settings(&self.settings);
+        }
+        ui.add_space(14.0);
         ui.label(RichText::new(self.t("theme_h").to_uppercase()).color(c.ink2).size(12.0).b());
         ui.add_space(8.0);
         let cols = ((ui.available_width() + 14.0) / 214.0).floor().max(1.0) as usize;
@@ -3491,15 +3629,23 @@ impl CyberApp {
             ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(72.0, 72.0))));
             ui.vertical(|ui| {
                 ui.label(RichText::new(format!("CyberCord {VERSION}")).color(c.ink).b().size(20.0));
-                ui.colored_label(c.ink2, "SocioCyberneering Inc. Communication Cooperations");
+                docs::brand(ui, "SocioCyberneering Inc.", 15.0, c.ink);
+                ui.colored_label(c.ink2, "Communication Cooperations");
             });
         });
         ui.add_space(12.0);
         ui.colored_label(c.ink, self.t("about_body").replace("{v}", VERSION));
         ui.add_space(10.0);
-        if ui.add(egui::Button::new(RichText::new(self.t("sce_doc")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(220.0, 34.0))).clicked() {
-            self.doc_open = Some(Doc::Sce);
-        }
+        ui.horizontal_wrapped(|ui| {
+            if ui.add(egui::Button::new(RichText::new(self.t("sce_doc")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(220.0, 34.0))).clicked() {
+                self.doc_open = Some(Doc::Sce);
+            }
+            for (key, file) in [("pdf_venus", "venus-project.pdf"), ("pdf_gs", "general-semantics.pdf")] {
+                if ui.add(egui::Button::new(RichText::new(format!("PDF · {}", self.t(key))).color(c.ink)).fill(c.card).rounding(Rounding::same(8.0)).min_size(egui::vec2(0.0, 34.0))).clicked() {
+                    self.open_builtin_pdf(file);
+                }
+            }
+        });
         ui.add_space(10.0);
         ui.colored_label(c.ink2, RichText::new(self.t("twemoji_credit")).small());
         ui.colored_label(c.ink2, RichText::new(self.t("fonts_credit")).small());
@@ -4523,6 +4669,9 @@ impl CyberApp {
             "done" | "seeding" => {
                 if let Some(p) = &t.path {
                     let path = std::path::PathBuf::from(p);
+                    if path.extension().map(|e| e.eq_ignore_ascii_case("pdf")).unwrap_or(false) && ui.add(egui::Button::new(RichText::new(self.t("pdf_read")).color(c.on_accent)).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                        self.open_pdf_file(&path);
+                    }
                     if ui.add(egui::Button::new(RichText::new(self.t("file_open")).color(c.on_accent)).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
                         open_path(&path);
                     }

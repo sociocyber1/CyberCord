@@ -40,6 +40,7 @@ Korzybski called humans "time-binders": each generation builds on the knowledge 
 
 **Wars must stop. Step one is to start with yourself, in your own relations with people.**
 
+- [The Science of Man: General Semantics — what it is and why (PDF, in Russian)](../assets/pdf/general-semantics.pdf)
 - [General semantics — materials (archive.org)](https://archive.org/details/general-semantic-2024)
 
 Special thanks to Mikhail Korotkov for the translations.
