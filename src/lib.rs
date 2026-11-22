@@ -192,3 +192,4 @@ pub mod words;
 pub mod history;
 pub mod semantics;
 pub mod profile;
+pub mod city;

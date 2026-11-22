@@ -87,6 +87,8 @@ pub enum Cmd {
     SetStatus(String),
     /// Save and publish my profile (the node sets peer, name, version and signs it).
     SetProfile(crate::profile::Profile),
+    /// Join (subscribe to) a channel that is not one of the built-in servers' — e.g. a city branch.
+    Subscribe(ChannelId),
     /// Share a local file of any size in a room (hashing runs in the background).
     ShareFile { channel: ChannelId, path: PathBuf, body: String },
     /// Queue a download; it starts whenever someone who has the file is online.
@@ -732,6 +734,13 @@ async fn run(
                     Cmd::SetScan(on) => {
                         scan = on;
                         emit(&event_tx, UiEvent::Status(if on { "looking for new users".into() } else { "not looking for new users (known nodes and friends only)".into() }));
+                    }
+                    Cmd::Subscribe(ch) => {
+                        let t = IdentTopic::new(ch.topic());
+                        if !topic_of_hash.contains_key(&t.hash()) {
+                            let _ = swarm.behaviour_mut().gossipsub.subscribe(&t);
+                            topic_of_hash.insert(t.hash(), ch);
+                        }
                     }
                     Cmd::SetProfile(mut p) => {
                         let old_rev = profiles.get(&local_id).map(|o| o.rev).unwrap_or(0);

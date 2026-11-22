@@ -537,3 +537,27 @@ intro_watch_long	Watch the intro video	Смотреть интро-видео	Д
 circle_sound_tap	tap for sound	нажмите — звук	натисніть — звук	tippen für Ton	toca para sonido	touchez pour le son	点击播放声音	タップで音声
 circle_no_sound	no sound	без звука	без звуку	ohne Ton	sin sonido	sans son	无声音	音声なし
 circle_mic_off	Microphone unavailable — this circle will be silent. Check Settings → Voice & sound.	Микрофон недоступен — кружок будет без звука. Проверьте Настройки → Голос и звук.	Мікрофон недоступний — кружечок буде без звуку. Перевірте Налаштування → Голос і звук.					
+city_tip	SocioCyberneering city map	Карта SocioCyberneering	Карта SocioCyberneering	SocioCyberneering-Stadtkarte	Mapa de la ciudad SocioCyberneering	Carte de la ville SocioCyberneering	SocioCyberneering 城市地图	SocioCyberneering 都市マップ
+subs_tip	My subscriptions	Мои подписки	Мої підписки	Meine Abos	Mis suscripciones	Mes abonnements	我的订阅	購読中
+subs_h	Subscriptions	Подписки	Підписки	Abos	Suscripciones	Abonnements	订阅	購読
+city_h	SocioCyberneering city	Город SocioCyberneering	Місто SocioCyberneering	Stadt SocioCyberneering	Ciudad SocioCyberneering	Ville SocioCyberneering	SocioCyberneering 城市	SocioCyberneering の都市
+city_sub	Districts → branches → chats and voice rooms. Subscribe to a branch — it appears in the side panel. The goal: people cooperating on projects across SocioCyberneering.	Районы → направления → чаты и голосовые каналы. Подпишитесь на направление — оно появится в левой панели. Задача — кооперировать людей в проекты по всему SocioCyberneering.	Райони → напрями → чати й голосові канали. Підпишіться — напрям з'явиться в лівій панелі. Мета — кооперувати людей у проєкти по всьому SocioCyberneering.					
+city_search	Search branches	Поиск направлений	Пошук напрямів	Bereiche suchen	Buscar ramas	Chercher	搜索方向	分野を検索
+city_found	FOUND	НАЙДЕНО	ЗНАЙДЕНО	GEFUNDEN	ENCONTRADO	TROUVÉ	找到	見つかった
+city_pick	Click a node on the map or search for a branch.	Нажмите на узел карты или найдите направление.	Натисніть на вузол мапи або знайдіть напрям.					
+city_channels	CHANNELS	КАНАЛЫ	КАНАЛИ	KANÄLE	CANALES	SALONS	频道	チャンネル
+city_open	Open	Открыть	Відкрити	Öffnen	Abrir	Ouvrir	打开	開く
+city_unsub	Unsubscribe	Отписаться	Відписатися	Abbestellen	Cancelar	Se désabonner	取消订阅	購読解除
+city_sub_btn	Subscribe	Подписаться	Підписатися	Abonnieren	Suscribirse	S'abonner	订阅	購読
+city_goal	Goal	Цель	Мета	Ziel	Objetivo	But	目标	目的
+city_ready	Ready messages	Готовые сообщения	Готові повідомлення	Vorlagen	Mensajes listos	Messages prêts	现成消息	定型文
+city_open_map	Open the city map	Открыть карту города	Відкрити мапу міста	Stadtkarte öffnen	Abrir el mapa	Ouvrir la carte	打开城市地图	都市マップを開く
+city_welcome	You are subscribed — the branch is now in the side panel.	Вы подписались — направление теперь в левой панели.	Ви підписалися — напрям тепер у лівій панелі.					
+city_welcome_tip	Start with a ready message (top of the chat): who you look for, a question with facts, or a result with date and version.	Начните с готового сообщения (вверху чата): кого ищете, вопрос с фактами или результат с датой и версией.	Почніть із готового повідомлення (вгорі чату): кого шукаєте, питання з фактами або результат із датою й версією.					
+city_ch_chat	talk about the branch	общение по направлению	спілкування за напрямом					
+city_ch_projects	projects and looking for people	проекты и поиск людей	проєкти й пошук людей					
+city_ch_help	questions and answers	вопросы и ответы	питання й відповіді					
+ch_chat	chat	общий	загальний	allgemein	general	général	闲聊	雑談
+ch_projects	projects	проекты	проєкти	projekte	proyectos	projets	项目	プロジェクト
+ch_help	help	помощь	допомога	hilfe	ayuda	aide	帮助	ヘルプ
+ch_room	voice room	голосовая	голосова	sprachraum	sala de voz	salon vocal	语音室	ボイスルーム

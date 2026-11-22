@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.17</h1>
+<h1 align="center">CyberCord 0.18</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -96,6 +96,30 @@ CyberCord похож на Discord, но у него нет центрально�
 - [Концепция (PDF)](docs/concept/cybercord-concept.pdf) — исходный документ
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
+
+## Что нового в 0.18 — город SocioCyberneering
+
+- **Карта-город** (плитка с городом в левой полосе): в центре
+  SocioCyberneering Inc., вокруг 8 районов — **Науки, Проекты, Дизайн,
+  CAD и инструменты, Инженерия, Город и среда, Общая семантика,
+  SocioCyberneering** — и 46 направлений-узлов (физика, химия, KiCad,
+  FreeCAD, Blender, гидропоника, Atom-Generator, CyberCord, «Венера», …).
+- **Поиск** по названиям и целям; найденные узлы подсвечиваются на карте.
+- **Карточка направления:** цель, каналы (`# общий`, `# проекты`,
+  `# помощь`, голосовая) и кнопка **«Подписаться»**. После подписки —
+  окно с целью и описанием каналов, а направление появляется в левой
+  панели (плитка «Подписки» со счётчиком).
+- **Цель канала** написана под заголовком при каждом входе.
+- **Готовые сообщения** в шапке чата: «ищу соратников», «вопрос с
+  фактами», «делюсь результатом (дата, версия)»; в CAD-направлениях — ещё
+  шаблон про файл, версию программы и формат экспорта.
+- Задача — **кооперировать людей в проекты** по всему SocioCyberneering:
+  каналы направлений — обычные P2P-каналы (`cc/ch/city.<направление>/<канал>`),
+  без сервера; подписки хранятся у вас и переживают обновления.
+
+![Город SocioCyberneering: районы и направления](docs/img/screen-city.png)
+
+![Канал направления: цель и готовые сообщения](docs/img/screen-city-branch.png)
 
 ## Что нового в 0.17
 
@@ -460,12 +484,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.17.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.18.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.17.0-linux-x86_64.tar.gz
-cd cybercord-0.17.0-linux-x86_64
+tar xf cybercord-0.18.0-linux-x86_64.tar.gz
+cd cybercord-0.18.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -671,6 +695,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.18:** the SocioCyberneering city map: 8 districts and 46 branches around the centre, search, a card with the goal and channels, subscribe → the branch appears in the side panel; the channel goal is shown on entering; ready messages in the chat header (CAD branches get a file/version template).
 
 **0.17:** profiles (avatar, work, tasks, activity, skills 0–10 with comments, interests from a 100-item catalog), a compact index code next to names (`Alice [Rs8·El7·GS6+1]`) decoded in the profile view, signed and spread without servers; Windows tray Open/Quit fixed; clearer circle sound hints; the intro plays once; the logo screen can be turned off.
 

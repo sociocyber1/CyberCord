@@ -210,6 +210,13 @@ pub struct CyberApp {
     search_q: String,
     search_res: Vec<cybercord_node::types::UserCard>,
     show_map: bool,
+    /// SocioCyberneering city map; my subscribed branches in the side panel
+    show_city: bool,
+    show_subs: bool,
+    sub_sel: (String, String),
+    city_sel: Option<String>,
+    city_query: String,
+    city_welcome: Option<String>,
     map: MapState,
     transfers: Vec<cybercord_node::transfer::TransferInfo>,
     show_downloads: bool,
@@ -357,6 +364,12 @@ impl CyberApp {
             search_q: String::new(),
             search_res: Vec::new(),
             show_map: false,
+            show_city: false,
+            show_subs: false,
+            sub_sel: (String::new(), String::new()),
+            city_sel: None,
+            city_query: String::new(),
+            city_welcome: None,
             map: MapState::default(),
             transfers: Vec::new(),
             show_downloads: false,
@@ -398,9 +411,24 @@ impl CyberApp {
     /// Optional start view via $CYBERCORD_START, for demos and screenshots:
     /// "friends", "dm:<peer>", "chat", "tour:<n>", "emoji", "gifs", "rec", "settings".
     fn with_start_view(mut self) -> Self {
+        // join the gossip topics of my city subscriptions
+        for slug in self.settings.subs.clone() {
+            for (c, _, _) in cybercord_node::city::TEXT {
+                let _ = self.handle.cmd_tx.send(Cmd::Subscribe(ChannelId::new(cybercord_node::city::guild(&slug), *c)));
+            }
+        }
         if let Ok(v) = std::env::var("CYBERCORD_START") {
             for part in v.split(',') {
                 match part {
+                    "city" => {
+                        self.show_city = true;
+                        self.show_home = false;
+                        self.city_sel = Some("physics".into());
+                    }
+                    "subs" if !self.settings.subs.is_empty() => {
+                        let b = self.settings.subs[0].clone();
+                        self.open_branch(&b, "chat");
+                    }
                     "friends" => {
                         self.show_home = false;
                         self.show_friends = true;
@@ -441,6 +469,8 @@ impl CyberApp {
                     }
                     "map" => {
                         self.show_map = true;
+                            self.show_city = false;
+                            self.show_subs = false;
                         self.show_home = false;
                     }
                     p if p.starts_with("find:") => {
@@ -506,7 +536,7 @@ impl CyberApp {
     }
 
     fn chat_visible(&self) -> bool {
-        !self.show_downloads && !self.show_map && !self.show_home && (!self.show_friends || self.dm_open.is_some())
+        !self.show_downloads && !self.show_map && !self.show_city && !self.show_home && (!self.show_friends || self.dm_open.is_some())
     }
 
     fn friend_name(&self, peer: &str) -> String {
@@ -520,6 +550,9 @@ impl CyberApp {
     }
 
     fn current_channel(&self) -> ChannelId {
+        if self.show_subs && !self.sub_sel.0.is_empty() {
+            return ChannelId::new(cybercord_node::city::guild(&self.sub_sel.0), self.sub_sel.1.clone());
+        }
         let s = &SERVERS[self.sel_server];
         ChannelId::new(s.slug, s.channels[self.sel_channel])
     }
@@ -1018,6 +1051,8 @@ impl CyberApp {
         self.tour_changed = Instant::now();
         self.popup = Popup::None;
         self.show_map = false;
+                            self.show_city = false;
+                            self.show_subs = false;
         match TOUR[step].3 {
             Need::Home => {
                 self.show_home = true;
@@ -1234,8 +1269,12 @@ impl eframe::App for CyberApp {
         }
 
         self.rail(ctx);
-        self.channel_column(ctx, &ch);
-        if !self.show_map {
+        if self.show_subs {
+            self.subs_column(ctx);
+        } else {
+            self.channel_column(ctx, &ch);
+        }
+        if !self.show_map && !self.show_city {
             self.member_panel(ctx, &ch);
         }
         self.bottom_bar(ctx);
@@ -1247,6 +1286,8 @@ impl eframe::App for CyberApp {
                     self.downloads_view(ui);
                 } else if self.show_map {
                     self.map_view(ui);
+                } else if self.show_city {
+                    self.city_view(ui);
                 } else if self.show_home {
                     self.home_view(ui);
                 } else if self.show_friends && self.dm_open.is_none() {
@@ -1270,6 +1311,7 @@ impl eframe::App for CyberApp {
         self.analyze_overlay(ctx);
         self.block_editor(ctx);
         self.profile_window(ctx);
+        self.city_welcome_window(ctx);
         self.pdf_overlay(ctx);
         self.draw_toast(ctx);
         self.draw_tour(ctx);
@@ -1295,6 +1337,8 @@ impl CyberApp {
                             self.show_home = true;
                             self.show_friends = false;
                             self.show_map = false;
+                            self.show_city = false;
+                            self.show_subs = false;
                             self.show_downloads = false;
                         }
                         ui.add_space(8.0);
@@ -1308,6 +1352,8 @@ impl CyberApp {
                             self.show_friends = true;
                             self.show_home = false;
                             self.show_map = false;
+                            self.show_city = false;
+                            self.show_subs = false;
                             self.show_downloads = false;
                         }
                         ui.add_space(8.0);
@@ -1317,9 +1363,37 @@ impl CyberApp {
                         self.anchor("map_btn", nm.rect);
                         if nm.clicked() {
                             self.show_map = true;
+                            self.show_city = false;
+                            self.show_subs = false;
                             self.show_home = false;
                             self.show_friends = false;
                             self.show_downloads = false;
+                        }
+                        ui.add_space(8.0);
+                        let tex = self.icons.get(ui.ctx(), "city_tile", CITY_TILE);
+                        if rail_tile(ui, tex, self.show_city, None).on_hover_text(self.t("city_tip")).clicked() {
+                            self.show_city = true;
+                            self.show_subs = false;
+                            self.show_map = false;
+                            self.show_home = false;
+                            self.show_friends = false;
+                            self.show_downloads = false;
+                        }
+                        if !self.settings.subs.is_empty() {
+                            ui.add_space(8.0);
+                            let tex = self.icons.get(ui.ctx(), "subs_tile", SUBS_TILE);
+                            let on = self.show_subs && !self.show_city && !self.show_home && !self.show_friends && !self.show_map;
+                            if rail_tile(ui, tex, on, Some(self.settings.subs.len())).on_hover_text(self.t("subs_tip")).clicked() {
+                                self.show_subs = true;
+                                self.show_city = false;
+                                self.show_map = false;
+                                self.show_home = false;
+                                self.show_friends = false;
+                                self.show_downloads = false;
+                                if self.sub_sel.0.is_empty() || !self.settings.subs.contains(&self.sub_sel.0) {
+                                    self.sub_sel = (self.settings.subs[0].clone(), "chat".into());
+                                }
+                            }
                         }
                         ui.add_space(8.0);
                         let (r, _) = ui.allocate_exact_size(egui::vec2(32.0, 2.0), egui::Sense::hover());
@@ -1327,7 +1401,7 @@ impl CyberApp {
                         ui.add_space(8.0);
                         let top = ui.cursor().min;
                         for (i, s) in SERVERS.iter().enumerate() {
-                            let selected = !self.show_home && !self.show_friends && !self.show_map && i == self.sel_server;
+                            let selected = !self.show_home && !self.show_friends && !self.show_map && !self.show_city && !self.show_subs && i == self.sel_server;
                             let tex = self.icons.get(ui.ctx(), s.slug, s.icon);
                             let in_voice_here = self.in_voice.as_deref().map(|r| r.starts_with(&format!("{}/", s.slug))).unwrap_or(false);
                             let r = rail_tile(ui, tex, selected, None).on_hover_text(s.name);
@@ -1343,6 +1417,8 @@ impl CyberApp {
                                 self.show_home = false;
                                 self.show_friends = false;
                                 self.show_map = false;
+                            self.show_city = false;
+                            self.show_subs = false;
                                 self.show_downloads = false;
                             }
                             ui.add_space(8.0);
@@ -1361,42 +1437,13 @@ impl CyberApp {
             .resizable(false)
             .frame(egui::Frame::none().fill(th().surface).inner_margin(egui::Margin::same(12.0)))
             .show(ctx, |ui| {
-                // bottom: "voice connected" box + user panel with settings (Discord-like)
-                egui::TopBottomPanel::bottom("me").frame(egui::Frame::none().fill(th().surface)).show_separator_line(false).show_inside(ui, |ui| {
-                    self.voice_box(ui);
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        let initial = self.self_name.chars().next().unwrap_or('?').to_uppercase().to_string();
-                        avatar(ui, &initial, 16.0, th().accent, if self.mic_on && self.in_voice.is_some() { Some(th().green) } else { None });
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&self.self_name).color(th().ink).b());
-                            let st = self.settings.status.clone();
-                            let label = if st.is_empty() { short(&self.self_id) } else { self.status_label(&st).to_string() };
-                            let col = status_color(&st).unwrap_or(th().ink2);
-                            ui.menu_button(RichText::new(format!("● {label}")).color(col).small(), |ui| {
-                                for (sid, key) in crate::tray::STATUSES {
-                                    let text = RichText::new(format!("●  {}", self.t(key))).color(status_color(sid).unwrap_or(th().ink2));
-                                    if ui.selectable_label(st == *sid, text).clicked() {
-                                        self.set_status(sid);
-                                        ui.close_menu();
-                                    }
-                                }
-                            });
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let gear = self.icons.get(ui.ctx(), "gear", SYM_GEAR);
-                            let g = icon_button(ui, gear, th().ink2, th().card, 34.0).on_hover_text(self.t("settings"));
-                            self.anchor("settings_btn", g.rect);
-                            if g.clicked() {
-                                self.show_settings = true;
-                                self.set_opened = Instant::now();
-                            }
-                        });
-                    });
-                    ui.add_space(2.0);
-                });
+                self.me_panel(ui);
                 if self.show_friends {
                     self.friends_column(ui);
+                    return;
+                }
+                if self.show_city {
+                    self.city_column(ui);
                     return;
                 }
                 ui.horizontal(|ui| {
@@ -1739,6 +1786,8 @@ impl CyberApp {
                 }
                 if ui.add(egui::Button::new(RichText::new(self.t("map_open")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).clicked() {
                     self.show_map = true;
+                            self.show_city = false;
+                            self.show_subs = false;
                     self.show_home = false;
                     self.show_friends = false;
                 }
@@ -1868,9 +1917,29 @@ impl CyberApp {
                 let hash = self.icons.get(ui.ctx(), "hash", SYM_HASH);
                 ui.add(egui::Image::new(SizedTexture::new(hash, egui::vec2(18.0, 18.0))).tint(th().ink2));
                 ui.label(RichText::new(self.ch_label(&ch.channel)).color(th().ink).b().size(17.0)).on_hover_text(format!("#{}", ch.channel));
-                ui.colored_label(th().ink2, format!("· {}", SERVERS[self.sel_server].name));
+                let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+                if let Some(b) = ch.guild.strip_prefix("city.").and_then(cybercord_node::city::branch) {
+                    ui.colored_label(th().ink2, format!("· {}", if ru { b.ru } else { b.en }));
+                    ui.menu_button(RichText::new(self.t("city_ready")).small(), |ui| {
+                        ui.set_min_width(380.0);
+                        for m in cybercord_node::city::ready_messages(b, ru) {
+                            if ui.button(&m).clicked() {
+                                self.input = m.clone();
+                                self.focus_input = 3;
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                } else {
+                    ui.colored_label(th().ink2, format!("· {}", SERVERS[self.sel_server].name));
+                }
             }
         });
+        if let Some(b) = ch.guild.strip_prefix("city.").and_then(cybercord_node::city::branch) {
+            // the goal of the channel, shown on entering
+            let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+            ui.add(egui::Label::new(RichText::new(format!("{}: {}", self.t("city_goal"), if ru { b.goal_ru } else { b.goal_en })).color(th().ink2).small()).wrap());
+        }
         ui.add_space(4.0);
         sep(ui);
 
@@ -2243,6 +2312,324 @@ impl CyberApp {
                 st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(caret))));
                 st.store(ctx, id);
             }
+        }
+    }
+
+    fn subscribe(&mut self, branch: &str, on: bool) {
+        if on {
+            if !self.settings.subs.iter().any(|b| b == branch) {
+                self.settings.subs.push(branch.to_string());
+            }
+            for (c, _, _) in cybercord_node::city::TEXT {
+                let _ = self.handle.cmd_tx.send(Cmd::Subscribe(ChannelId::new(cybercord_node::city::guild(branch), *c)));
+            }
+            self.city_welcome = Some(branch.to_string());
+        } else {
+            self.settings.subs.retain(|b| b != branch);
+            if self.sub_sel.0 == branch {
+                self.sub_sel = (String::new(), String::new());
+                if self.settings.subs.is_empty() {
+                    self.show_subs = false;
+                }
+            }
+        }
+        store::save_settings(&self.settings);
+    }
+
+    fn open_branch(&mut self, branch: &str, channel: &str) {
+        self.sub_sel = (branch.to_string(), channel.to_string());
+        self.show_subs = true;
+        self.show_city = false;
+        self.show_map = false;
+        self.show_home = false;
+        self.show_friends = false;
+        self.show_downloads = false;
+    }
+
+    /// Bottom of the side panel: "voice connected" box + me + settings.
+    fn me_panel(&mut self, ui: &mut egui::Ui) {
+        // bottom: "voice connected" box + user panel with settings (Discord-like)
+        egui::TopBottomPanel::bottom("me").frame(egui::Frame::none().fill(th().surface)).show_separator_line(false).show_inside(ui, |ui| {
+            self.voice_box(ui);
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let initial = self.self_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                avatar(ui, &initial, 16.0, th().accent, if self.mic_on && self.in_voice.is_some() { Some(th().green) } else { None });
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(&self.self_name).color(th().ink).b());
+                    let st = self.settings.status.clone();
+                    let label = if st.is_empty() { short(&self.self_id) } else { self.status_label(&st).to_string() };
+                    let col = status_color(&st).unwrap_or(th().ink2);
+                    ui.menu_button(RichText::new(format!("● {label}")).color(col).small(), |ui| {
+                        for (sid, key) in crate::tray::STATUSES {
+                            let text = RichText::new(format!("●  {}", self.t(key))).color(status_color(sid).unwrap_or(th().ink2));
+                            if ui.selectable_label(st == *sid, text).clicked() {
+                                self.set_status(sid);
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let gear = self.icons.get(ui.ctx(), "gear", SYM_GEAR);
+                    let g = icon_button(ui, gear, th().ink2, th().card, 34.0).on_hover_text(self.t("settings"));
+                    self.anchor("settings_btn", g.rect);
+                    if g.clicked() {
+                        self.show_settings = true;
+                        self.set_opened = Instant::now();
+                    }
+                });
+            });
+            ui.add_space(2.0);
+        });
+    }
+
+    /// Side panel while the city map is open: districts → branches.
+    fn city_column(&mut self, ui: &mut egui::Ui) {
+        use cybercord_node::city::{BRANCHES, DISTRICTS};
+        let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+        ui.label(RichText::new(self.t("city_h")).color(th().ink).b().size(15.5));
+        ui.add_space(6.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for d in DISTRICTS {
+                let col = Color32::from_rgb(d.color.0, d.color.1, d.color.2);
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 4.0, col);
+                    section_label(ui, if ru { d.ru } else { d.en });
+                });
+                for b in BRANCHES.iter().filter(|b| b.district == d.slug) {
+                    let subbed = self.settings.subs.iter().any(|s| s == b.slug);
+                    let sel = self.city_sel.as_deref() == Some(b.slug);
+                    let name = format!("{}{}", if ru { b.ru } else { b.en }, if subbed { "  ✓" } else { "" });
+                    let txt = RichText::new(name).color(if sel { th().ink } else { th().ink2 });
+                    if ui.selectable_label(sel, txt).clicked() {
+                        self.city_sel = Some(b.slug.to_string());
+                    }
+                }
+                ui.add_space(6.0);
+            }
+        });
+    }
+
+    /// Side panel in "subscriptions" mode: my branches with their channels.
+    fn subs_column(&mut self, ctx: &egui::Context) {
+        let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+        egui::SidePanel::left("subs").exact_width(236.0).resizable(false).frame(egui::Frame::none().fill(th().surface).inner_margin(egui::Margin::same(12.0))).show(ctx, |ui| {
+            self.me_panel(ui);
+            ui.label(RichText::new(self.t("subs_h")).color(th().ink).b().size(15.5));
+            ui.add_space(6.0);
+            let hash = self.icons.get(ui.ctx(), "hash", SYM_HASH);
+            let spk = self.icons.get(ui.ctx(), "speaker", SYM_SPEAKER);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for slug in self.settings.subs.clone() {
+                    let Some(b) = cybercord_node::city::branch(&slug) else { continue };
+                    let col = cybercord_node::city::district(b.district).map(|d| Color32::from_rgb(d.color.0, d.color.1, d.color.2)).unwrap_or(th().accent);
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(r.center(), 4.0, col);
+                        section_label(ui, if ru { b.ru } else { b.en });
+                    });
+                    for (c, _, _) in cybercord_node::city::TEXT {
+                        let sel = self.sub_sel == (slug.clone(), c.to_string());
+                        let label = self.ch_label(c);
+                        if channel_row(ui, hash, &label, sel, false).clicked() {
+                            self.sub_sel = (slug.clone(), c.to_string());
+                        }
+                    }
+                    let room = format!("{}/{}", cybercord_node::city::guild(&slug), cybercord_node::city::VOICE.0);
+                    let mine = self.in_voice.as_deref() == Some(room.as_str());
+                    let label = self.ch_label(cybercord_node::city::VOICE.0);
+                    if channel_row(ui, spk, &label, mine, true).on_hover_text(self.t("voice_join_tip")).clicked() && !mine {
+                        let _ = self.handle.cmd_tx.send(Cmd::JoinVoice { channel: ChannelId::new(cybercord_node::city::guild(&slug), cybercord_node::city::VOICE.0) });
+                    }
+                    ui.add_space(6.0);
+                }
+                if ui.link(self.t("city_open_map")).clicked() {
+                    self.show_city = true;
+                    self.show_subs = false;
+                }
+            });
+        });
+    }
+
+    /// The SocioCyberneering city: districts in a ring around the centre,
+    /// branches as nodes; search, a card with the goal, subscribe.
+    fn city_view(&mut self, ui: &mut egui::Ui) {
+        use cybercord_node::city::{BRANCHES, DISTRICTS};
+        let c = th();
+        let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(self.t("city_h")).color(c.ink).b().size(20.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let hint = self.t("city_search");
+                ui.add(egui::TextEdit::singleline(&mut self.city_query).hint_text(hint).desired_width(260.0));
+            });
+        });
+        ui.colored_label(c.ink2, RichText::new(self.t("city_sub")).small());
+        ui.add_space(6.0);
+        let q = self.city_query.trim().to_lowercase();
+        let matches = |b: &cybercord_node::city::Branch| q.is_empty() || b.ru.to_lowercase().contains(&q) || b.en.to_lowercase().contains(&q) || b.goal_ru.to_lowercase().contains(&q) || b.goal_en.to_lowercase().contains(&q);
+        let avail = ui.available_size();
+        let card_w = 300.0;
+        ui.horizontal_top(|ui| {
+            // --- the map
+            let size = (avail.x - card_w - 20.0).min(avail.y - 10.0).max(300.0);
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+            let p = ui.painter_at(rect);
+            let center = rect.center();
+            let r_out = size / 2.0 - 8.0;
+            let r_in = r_out * 0.30;
+            p.circle_filled(center, r_out, c.surface);
+            let n = DISTRICTS.len();
+            let hover = resp.hover_pos();
+            let mut hovered: Option<&'static str> = None;
+            for (k, d) in DISTRICTS.iter().enumerate() {
+                let a0 = std::f32::consts::TAU * k as f32 / n as f32 - std::f32::consts::FRAC_PI_2;
+                let a1 = std::f32::consts::TAU * (k + 1) as f32 / n as f32 - std::f32::consts::FRAC_PI_2;
+                let col = Color32::from_rgb(d.color.0, d.color.1, d.color.2);
+                // district sector (ring segment)
+                let mut pts = Vec::new();
+                for i in 0..=24 {
+                    let a = a0 + (a1 - a0) * i as f32 / 24.0;
+                    pts.push(center + egui::vec2(a.cos(), a.sin()) * (r_out - 2.0));
+                }
+                for i in (0..=24).rev() {
+                    let a = a0 + (a1 - a0) * i as f32 / 24.0;
+                    pts.push(center + egui::vec2(a.cos(), a.sin()) * (r_in + 6.0));
+                }
+                p.add(egui::Shape::convex_polygon(pts.clone(), col.gamma_multiply(0.13), Stroke::new(1.5, c.window)));
+                // label
+                let am = (a0 + a1) / 2.0;
+                let lp = center + egui::vec2(am.cos(), am.sin()) * (r_in + (r_out - r_in) * 0.90);
+                let g = ui.fonts(|f| f.layout_no_wrap((if ru { d.ru } else { d.en }).to_string(), egui::FontId::new(11.5, egui::FontFamily::Name("bold".into())), col));
+                let x = (lp.x - g.size().x / 2.0).clamp(rect.left() + 2.0, rect.right() - g.size().x - 2.0);
+                p.galley(egui::pos2(x, lp.y - g.size().y / 2.0), g, col);
+                // branches as nodes on two rings inside the sector
+                let bs: Vec<&cybercord_node::city::Branch> = BRANCHES.iter().filter(|b| b.district == d.slug).collect();
+                let m = bs.len().max(1);
+                for (j, b) in bs.iter().enumerate() {
+                    let a = a0 + (a1 - a0) * (j as f32 + 0.5) / m as f32;
+                    let rr = r_in + (r_out - r_in) * [0.22, 0.47, 0.70][if m > 6 { j % 3 } else { 1 + j % 2 }];
+                    let pos = center + egui::vec2(a.cos(), a.sin()) * rr;
+                    let subbed = self.settings.subs.iter().any(|s| s == b.slug);
+                    let selected = self.city_sel.as_deref() == Some(b.slug);
+                    let hit = matches(b);
+                    let rad = if selected { 11.0 } else { 8.0 };
+                    let near = hover.map(|h| h.distance(pos) < 12.0).unwrap_or(false);
+                    if near {
+                        hovered = Some(b.slug);
+                    }
+                    p.line_segment([center + egui::vec2(a.cos(), a.sin()) * (r_in + 6.0), pos], Stroke::new(1.0, col.gamma_multiply(if hit { 0.5 } else { 0.15 })));
+                    p.circle_filled(pos, rad + 2.0, c.window);
+                    p.circle_filled(pos, rad, if hit { col } else { col.gamma_multiply(0.25) });
+                    if subbed {
+                        p.circle_stroke(pos, rad + 4.0, Stroke::new(2.0, c.green));
+                    }
+                    if selected || near || (!q.is_empty() && hit) {
+                        p.text(pos + egui::vec2(0.0, rad + 9.0), Align2::CENTER_CENTER, if ru { b.ru } else { b.en }, egui::FontId::proportional(11.0), c.ink);
+                    }
+                }
+            }
+            // centre: SocioCyberneering
+            p.circle_filled(center, r_in, Color32::from_rgb(0x0b, 0x12, 0x20));
+            let tex = self.icons.get(ui.ctx(), "app256", APP_ICON_256);
+            p.image(tex, Rect::from_center_size(center - egui::vec2(0.0, 8.0), egui::vec2(r_in * 0.9, r_in * 0.9)), Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
+            let mut job = egui::text::LayoutJob::default();
+            job.append("SocioCyberneering Inc.", 0.0, egui::TextFormat { font_id: egui::FontId::new((r_in * 0.11).clamp(8.0, 12.0), egui::FontFamily::Name("brand".into())), color: Color32::WHITE, extra_letter_spacing: 1.2, ..Default::default() });
+            let g = ui.fonts(|f| f.layout_job(job));
+            p.galley(center + egui::vec2(-g.size().x / 2.0, r_in * 0.48), g, Color32::WHITE);
+            if let Some(h) = hovered {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                if resp.clicked() {
+                    self.city_sel = Some(h.to_string());
+                }
+            }
+            // --- the card / search results
+            ui.vertical(|ui| {
+                ui.set_width(card_w);
+                if !q.is_empty() {
+                    ui.label(RichText::new(self.t("city_found")).color(c.ink2).small().b());
+                    for b in BRANCHES.iter().filter(|b| matches(b)).take(12) {
+                        if ui.link(if ru { b.ru } else { b.en }).clicked() {
+                            self.city_sel = Some(b.slug.to_string());
+                        }
+                    }
+                    ui.separator();
+                }
+                let Some(b) = self.city_sel.as_deref().and_then(cybercord_node::city::branch) else {
+                    ui.colored_label(c.ink2, self.t("city_pick"));
+                    return;
+                };
+                let d = cybercord_node::city::district(b.district);
+                let col = d.map(|d| Color32::from_rgb(d.color.0, d.color.1, d.color.2)).unwrap_or(c.accent);
+                egui::Frame::none().fill(c.surface).stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(12.0)).inner_margin(egui::Margin::same(14.0)).show(ui, |ui| {
+                    ui.set_width(card_w - 28.0);
+                    ui.label(RichText::new(d.map(|d| if ru { d.ru } else { d.en }).unwrap_or("")).color(col).small().b());
+                    ui.label(RichText::new(if ru { b.ru } else { b.en }).color(c.ink).b().size(18.0));
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(if ru { b.goal_ru } else { b.goal_en }).color(c.ink)).wrap());
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(self.t("city_channels")).color(c.ink2).small().b());
+                    for (ch, _, _) in cybercord_node::city::TEXT {
+                        ui.label(RichText::new(format!("# {}", self.ch_label(ch))).color(c.ink));
+                    }
+                    ui.label(RichText::new(format!("🔊 {}", self.ch_label(cybercord_node::city::VOICE.0))).color(c.ink));
+                    ui.add_space(10.0);
+                    let subbed = self.settings.subs.iter().any(|s| s == b.slug);
+                    let slug = b.slug.to_string();
+                    ui.horizontal(|ui| {
+                        if subbed {
+                            if ui.add(egui::Button::new(RichText::new(self.t("city_open")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                                self.open_branch(&slug, "chat");
+                            }
+                            if ui.button(self.t("city_unsub")).clicked() {
+                                self.subscribe(&slug, false);
+                            }
+                        } else if ui.add(egui::Button::new(RichText::new(self.t("city_sub_btn")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                            self.subscribe(&slug, true);
+                        }
+                    });
+                });
+            });
+        });
+    }
+
+    /// After subscribing: what the branch is for, its channels, how to start.
+    fn city_welcome_window(&mut self, ctx: &egui::Context) {
+        let Some(slug) = self.city_welcome.clone() else { return };
+        let Some(b) = cybercord_node::city::branch(&slug) else {
+            self.city_welcome = None;
+            return;
+        };
+        let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
+        let c = th();
+        let mut open = true;
+        let mut go = false;
+        egui::Window::new(if ru { b.ru } else { b.en }).collapsible(false).resizable(false).open(&mut open).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(RichText::new(self.t("city_welcome")).color(c.green).b());
+            ui.add_space(4.0);
+            ui.label(RichText::new(self.t("city_goal")).color(c.ink2).small().b());
+            ui.add(egui::Label::new(RichText::new(if ru { b.goal_ru } else { b.goal_en }).color(c.ink)).wrap());
+            ui.add_space(6.0);
+            ui.label(RichText::new(self.t("city_channels")).color(c.ink2).small().b());
+            for (ch, _, _) in cybercord_node::city::TEXT {
+                ui.label(format!("# {} — {}", self.ch_label(ch), self.td(&format!("city_ch_{ch}"))));
+            }
+            ui.label(format!("🔊 {}", self.ch_label(cybercord_node::city::VOICE.0)));
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(self.t("city_welcome_tip")).color(c.ink2).small()).wrap());
+            ui.add_space(8.0);
+            if ui.add(egui::Button::new(RichText::new(self.t("city_open")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                go = true;
+            }
+        });
+        if go {
+            self.open_branch(&slug, "chat");
+            self.city_welcome = None;
+        } else if !open {
+            self.city_welcome = None;
         }
     }
 
@@ -3472,6 +3859,8 @@ const BUILTIN_GIFS: [&[u8]; 5] = [
 ];
 const SYM_IMAGE: &[u8] = include_bytes!("../assets/symbolic/image.png");
 const SYM_SIGMA: &[u8] = include_bytes!("../assets/symbolic/sigma.png");
+const CITY_TILE: &[u8] = include_bytes!("../assets/emoji/sce/sce_city.png");
+const SUBS_TILE: &[u8] = include_bytes!("../assets/emoji/sce/sce_nodes.png");
 const SYM_LEVELS: &[u8] = include_bytes!("../assets/symbolic/levels.png");
 const DOC_SD: &[u8] = include_bytes!("../assets/docs/structural-differential.png");
 
@@ -4747,6 +5136,8 @@ impl CyberApp {
             self.show_friends = true;
             self.show_home = false;
             self.show_map = false;
+                            self.show_city = false;
+                            self.show_subs = false;
         }
     }
 

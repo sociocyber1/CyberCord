@@ -322,6 +322,9 @@ pub struct Settings {
     /// Splash with the logo at start (off = faster start).
     #[serde(default = "yes")]
     pub splash: bool,
+    /// Subscribed city branches (slugs), shown in the side panel.
+    #[serde(default)]
+    pub subs: Vec<String>,
 }
 
 fn hundred() -> f32 {
