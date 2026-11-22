@@ -44,6 +44,26 @@ fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
 }
 
+/// Scale / chart editor state. `target`: (message id, first line, line count).
+struct BlockEd {
+    chart_mode: bool,
+    scale: crate::blocks::Scale,
+    chart: crate::blocks::Chart,
+    target: Option<(String, usize, usize)>,
+}
+
+impl BlockEd {
+    fn new_scale() -> Self {
+        BlockEd { chart_mode: false, scale: crate::blocks::Scale { title: String::new(), value: 5.0, max: 10.0, note: String::new() }, chart: Self::empty_chart(), target: None }
+    }
+    fn new_chart() -> Self {
+        BlockEd { chart_mode: true, scale: Self::new_scale().scale, chart: Self::empty_chart(), target: None }
+    }
+    fn empty_chart() -> crate::blocks::Chart {
+        crate::blocks::Chart { kind: crate::blocks::ChartKind::Bar, title: String::new(), rows: vec![("A".into(), 3.0), ("B".into(), 5.0), ("C".into(), 2.0)] }
+    }
+}
+
 #[derive(Default)]
 struct ChannelView {
     msgs: Vec<ChatEvent>,
@@ -218,6 +238,13 @@ pub struct CyberApp {
     /// open PDF reader
     pdf: Option<crate::pdfview::PdfView>,
     index_pick: bool,
+    /// formula mode in the composer (LaTeX with live preview)
+    math_mode: bool,
+    /// editor for a scale or chart block (new, or one in my message)
+    block_ed: Option<BlockEd>,
+    preview_h: f32,
+    /// picked image file from the system dialog (runs on its own thread)
+    pick_rx: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
     words_toast_at: Option<Instant>,
 }
 
@@ -337,6 +364,10 @@ impl CyberApp {
             started: Instant::now(),
             pdf: None,
             index_pick: false,
+            math_mode: false,
+            block_ed: None,
+            preview_h: 0.0,
+            pick_rx: None,
             words_toast_at: None,
             mic_test_msg: None,
             test_player: None,
@@ -674,6 +705,8 @@ impl CyberApp {
                     ui.set_height(48.0);
                     if doc == Doc::Sce {
                         docs::brand(ui, "SocioCyberneering Inc.", 13.0, c.ink2);
+                    } else if doc == Doc::Atom {
+                        ui.label(RichText::new("Atom-Generator").color(c.ink2).size(13.0).b());
                     } else {
                         ui.label(RichText::new(self.t("words_h")).color(c.ink2).size(13.0).b());
                     }
@@ -1110,6 +1143,7 @@ impl eframe::App for CyberApp {
         self.recorder_overlay(ctx);
         self.doc_overlay(ctx);
         self.analyze_overlay(ctx);
+        self.block_editor(ctx);
         self.pdf_overlay(ctx);
         self.draw_toast(ctx);
         self.draw_tour(ctx);
@@ -1244,7 +1278,11 @@ impl CyberApp {
                     ui.add(egui::Image::new(SizedTexture::new(tex, egui::vec2(28.0, 28.0))));
                     ui.vertical(|ui| {
                         ui.label(RichText::new(server.name).color(th().ink).b().size(15.5));
-                        ui.colored_label(th().ink2, RichText::new(self.t("server_label")).small());
+                        let motto = self.td(&format!("motto_{}", server.slug));
+                        ui.add(egui::Label::new(RichText::new(if motto.is_empty() { self.t("server_label") } else { motto }).color(th().ink2).small()).wrap());
+                        if server.slug == "atom-generator" && ui.link(RichText::new(self.t("atom_start")).small()).clicked() {
+                            self.doc_open = Some(Doc::Atom);
+                        }
                     });
                 });
                 ui.add_space(6.0);
@@ -1699,6 +1737,9 @@ impl CyberApp {
         if !hints.is_empty() && self.settings.words_hints {
             input_h += 30.0;
         }
+        if self.math_mode || crate::math::has_math(&self.input) {
+            input_h += self.preview_h;
+        }
         self.conversation_banner(ui, ch);
         let avail = ui.available_height() - input_h;
         // (message, what to show after edits); deleted messages are left out
@@ -1835,10 +1876,32 @@ impl CyberApp {
         if !hints.is_empty() && self.settings.words_hints {
             self.hint_strip(ui, &hints);
         }
+        if self.math_mode || crate::math::has_math(&self.input) {
+            let top = ui.cursor().min.y;
+            self.math_preview(ui);
+            self.preview_h = ui.cursor().min.y - top;
+        }
+        if let Some(rx) = &self.pick_rx {
+            if let Ok(r) = rx.try_recv() {
+                self.pick_rx = None;
+                if let Some(p) = r {
+                    self.send_path(p);
+                }
+            }
+        }
         let row = ui.horizontal(|ui| {
             let btns = ui.horizontal(|ui| {
                 ui.menu_button(RichText::new("＋").size(18.0).color(th().ink2), |ui| {
                     ui.set_min_width(230.0);
+                    if ui.button(self.t("block_scale")).clicked() {
+                        self.block_ed = Some(BlockEd::new_scale());
+                        ui.close_menu();
+                    }
+                    if ui.button(self.t("block_chart")).clicked() {
+                        self.block_ed = Some(BlockEd::new_chart());
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     for (key, tpl) in templates(self.lang) {
                         if ui.button(self.t(key)).clicked() {
                             if !self.input.is_empty() && !self.input.ends_with('\n') {
@@ -1862,6 +1925,27 @@ impl CyberApp {
                     .on_hover_text(self.t("gif_tip"));
                 if g.clicked() {
                     self.popup = if self.popup == Popup::Gifs { Popup::None } else { Popup::Gifs };
+                }
+                let img = self.icons.get(ui.ctx(), "image", SYM_IMAGE);
+                if icon_button_k(ui, img, th().ink2, th().window, 30.0, 0.62).on_hover_text(self.t("img_tip")).clicked() && self.pick_rx.is_none() {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.pick_rx = Some(rx);
+                    let title = self.t("img_pick").to_string();
+                    let ctx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        let r = rfd::FileDialog::new().set_title(title).add_filter("images", &["png", "jpg", "jpeg", "gif", "webp", "bmp"]).pick_file();
+                        let _ = tx.send(r);
+                        ctx.request_repaint();
+                    });
+                }
+                let sig = self.icons.get(ui.ctx(), "sigma", SYM_SIGMA);
+                let on = self.math_mode;
+                if icon_button_k(ui, sig, if on { th().on_accent } else { th().ink2 }, if on { th().accent } else { th().window }, 30.0, 0.62).on_hover_text(self.t("math_tip")).clicked() {
+                    self.math_mode = !self.math_mode;
+                    if self.math_mode && !self.input.contains('$') {
+                        self.input.push_str("$$  $$");
+                    }
+                    self.focus_input = 3;
                 }
                 // round "record a circle" button
                 let (r, resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
@@ -1953,7 +2037,7 @@ impl CyberApp {
                     let btn = |ui: &mut egui::Ui, label: String, tip: &str| ui.add(egui::Button::new(RichText::new(label).color(c.ink)).fill(c.card).rounding(Rounding::same(6.0))).on_hover_text(tip).clicked();
                     let core = picked.trim();
                     let next = sem::next_index(core, &context);
-                    let (base, has) = sem::split_index(core);
+                    let (base, _) = sem::split_index(core);
                     if btn(ui, format!("{}{}", self.t("ext_index"), subscript(next)), self.t("ext_index_tip")) {
                         result = Some(picked.replacen(core, &sem::with_index(base, next), 1));
                     }
@@ -2008,6 +2092,149 @@ impl CyberApp {
                 st.store(ctx, id);
             }
         }
+    }
+
+    /// The scale / chart editor: fields on the left, live preview, insert or save.
+    fn block_editor(&mut self, ctx: &egui::Context) {
+        let Some(mut ed) = self.block_ed.take() else { return };
+        let c = th();
+        let mut open = true;
+        let mut done: Option<String> = None;
+        let title = if ed.chart_mode { self.t("block_chart") } else { self.t("block_scale") };
+        egui::Window::new(title).collapsible(false).resizable(false).open(&mut open).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).default_width(520.0).show(ctx, |ui| {
+            ui.set_width(520.0);
+            if ed.target.is_none() {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut ed.chart_mode, false, self.t("block_scale"));
+                    ui.selectable_value(&mut ed.chart_mode, true, self.t("block_chart"));
+                });
+                ui.separator();
+            }
+            if !ed.chart_mode {
+                let s = &mut ed.scale;
+                egui::Grid::new("scale_ed").num_columns(2).spacing(egui::vec2(10.0, 8.0)).show(ui, |ui| {
+                    ui.label(self.t("block_title"));
+                    ui.add(egui::TextEdit::singleline(&mut s.title).hint_text(self.t("block_scale_hint")).desired_width(340.0));
+                    ui.end_row();
+                    ui.label(self.t("block_value"));
+                    let max = s.max.max(1.0);
+                    ui.add(egui::Slider::new(&mut s.value, 0.0..=max).step_by(if max <= 20.0 { 0.5 } else { 1.0 }));
+                    ui.end_row();
+                    ui.label(self.t("block_max"));
+                    ui.horizontal(|ui| {
+                        for m in [5.0, 10.0, 100.0] {
+                            if ui.selectable_label((s.max - m).abs() < 1e-9, crate::blocks::fmt(m)).clicked() {
+                                s.value = s.value / s.max * m;
+                                s.max = m;
+                            }
+                        }
+                        ui.add(egui::DragValue::new(&mut s.max).range(1.0..=1000.0));
+                    });
+                    ui.end_row();
+                    ui.label(self.t("block_note"));
+                    ui.add(egui::TextEdit::singleline(&mut s.note).desired_width(340.0));
+                    ui.end_row();
+                });
+                s.value = s.value.clamp(0.0, s.max);
+                ui.separator();
+                crate::blocks::draw_scale(ui, &ed.scale, c.ink, c.ink2, c.accent, c.line);
+            } else {
+                let ch = &mut ed.chart;
+                ui.horizontal(|ui| {
+                    ui.label(self.t("block_title"));
+                    ui.add(egui::TextEdit::singleline(&mut ch.title).desired_width(260.0));
+                    ui.selectable_value(&mut ch.kind, crate::blocks::ChartKind::Bar, self.t("block_bar"));
+                    ui.selectable_value(&mut ch.kind, crate::blocks::ChartKind::Line, self.t("block_line"));
+                });
+                ui.add_space(4.0);
+                let mut remove: Option<usize> = None;
+                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    for (k, (label, v)) in ch.rows.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(label).desired_width(200.0));
+                            ui.add(egui::DragValue::new(v).speed(0.1));
+                            if ui.small_button("×").clicked() {
+                                remove = Some(k);
+                            }
+                        });
+                    }
+                });
+                if let Some(k) = remove {
+                    ch.rows.remove(k);
+                }
+                if ui.button(self.t("block_add_row")).clicked() {
+                    let n = ch.rows.len() + 1;
+                    ch.rows.push((format!("{n}"), 0.0));
+                }
+                ui.separator();
+                crate::blocks::draw_chart(ui, &ed.chart, c.ink, c.ink2, c.accent, c.line);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let label = if ed.target.is_some() { self.t("block_save") } else { self.t("block_insert") };
+                if ui.add(egui::Button::new(RichText::new(label).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
+                    done = Some(if ed.chart_mode { ed.chart.to_text() } else { ed.scale.to_text() });
+                }
+            });
+        });
+        match done {
+            Some(text) => match ed.target.clone() {
+                None => {
+                    if !self.input.is_empty() && !self.input.ends_with('\n') {
+                        self.input.push('\n');
+                    }
+                    self.input.push_str(&text);
+                    self.focus_input = 3;
+                }
+                Some((id, start, len)) => {
+                    let ch = self.active_channel();
+                    if let Some(v) = self.views.get(&ch) {
+                        if let Some(m) = v.msgs.iter().find(|m| m.id == id) {
+                            let r = cybercord_node::history::resolve(m, &v.edits);
+                            let mut lines: Vec<String> = r.body.lines().map(|l| l.to_string()).collect();
+                            if start + len <= lines.len() {
+                                lines.splice(start..start + len, text.lines().map(|l| l.to_string()));
+                                let _ = self.handle.cmd_tx.send(Cmd::EditMessage { channel: ch, target: id, body: Some(lines.join("\n")), rev: r.rev + 1 });
+                            }
+                        }
+                    }
+                }
+            },
+            None if open => self.block_ed = Some(ed),
+            None => {}
+        }
+    }
+
+    /// Formula mode: snippets and a live preview of the draft.
+    fn math_preview(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        egui::Frame::none().fill(c.surface).stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(8.0)).inner_margin(egui::Margin::symmetric(10.0, 6.0)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if self.math_mode {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(self.t("math_snippets")).color(c.ink2).small());
+                    for (label, snip) in [("a/b", "\\frac{a}{b}"), ("√x", "\\sqrt{x}"), ("xⁿ", "x^{n}"), ("xᵢ", "x_{i}"), ("∑", "\\sum_{i=1}^{n} "), ("∫", "\\int_{a}^{b} "), ("lim", "\\lim_{x \\to 0} "), ("α", "\\alpha "), ("π", "\\pi "), ("∞", "\\infty "), ("≤", "\\le "), ("≠", "\\neq "), ("→", "\\to "), ("( )", "\\left( x \\right)")] {
+                        if ui.small_button(label).on_hover_text(snip).clicked() {
+                            // insert before the closing $$ if there is one
+                            match self.input.rfind("$$") {
+                                Some(k) if self.input[..k].contains("$$") => self.input.insert_str(k, snip),
+                                _ => self.input.push_str(snip),
+                            }
+                            self.focus_input = 3;
+                        }
+                    }
+                });
+            }
+            if crate::math::has_math(&self.input) {
+                ui.label(RichText::new(self.t("math_preview")).color(c.ink2).small());
+                let draft = self.input.clone();
+                egui::ScrollArea::vertical().id_salt("math_prev").max_height(140.0).show(ui, |ui| {
+                    let _ = self.body_view(ui, "preview", &draft, false);
+                });
+            } else if self.math_mode {
+                ui.label(RichText::new(self.t("math_help")).color(c.ink2).small());
+            }
+        });
     }
 
     /// Live hints under the composer: what in the draft may start a conflict.
@@ -2129,6 +2356,54 @@ impl CyberApp {
                         }
                     });
                 });
+                continue;
+            }
+            if t.starts_with("[chart") {
+                if let Some((chart, used)) = crate::blocks::Chart::parse(&lines[i..]) {
+                    let open = egui::Frame::none().stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+                        crate::blocks::draw_chart(ui, &chart, c.ink, c.ink2, c.accent, c.line);
+                        editable && ui.small_button(self.t("block_edit")).clicked()
+                    }).inner;
+                    if open {
+                        self.block_ed = Some(BlockEd { chart_mode: true, chart, target: Some((id.to_string(), i, used)), ..BlockEd::new_chart() });
+                    }
+                    i += used;
+                    continue;
+                }
+            }
+            if let Some(scale) = crate::blocks::Scale::parse(t) {
+                let open = egui::Frame::none().stroke(Stroke::new(1.0, c.line)).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+                    crate::blocks::draw_scale(ui, &scale, c.ink, c.ink2, c.accent, c.line);
+                    editable && ui.small_button(self.t("block_edit")).clicked()
+                }).inner;
+                if open {
+                    self.block_ed = Some(BlockEd { chart_mode: false, scale, target: Some((id.to_string(), i, 1)), ..BlockEd::new_scale() });
+                }
+                i += 1;
+                continue;
+            }
+            if crate::math::has_math(l) {
+                let pieces = crate::math::split(l);
+                if let [crate::math::Piece::Block(f)] = pieces.as_slice() {
+                    ui.add_space(4.0);
+                    ui.vertical_centered(|ui| crate::math::show(ui, f, 19.0, c.ink));
+                    ui.add_space(4.0);
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for p in pieces {
+                            match p {
+                                crate::math::Piece::Text(tx) => {
+                                    ui.label(RichText::new(tx.replace("\\$", "$")).color(c.ink).size(14.0));
+                                }
+                                crate::math::Piece::Inline(f) | crate::math::Piece::Block(f) => {
+                                    crate::math::show(ui, f, 15.0, c.ink);
+                                }
+                            }
+                        }
+                    });
+                }
+                i += 1;
                 continue;
             }
             let check = t.strip_prefix("- [ ]").map(|r| (false, r)).or_else(|| t.strip_prefix("- [x]").or_else(|| t.strip_prefix("- [X]")).map(|r| (true, r)));
@@ -2768,6 +3043,8 @@ const BUILTIN_GIFS: [&[u8]; 5] = [
     include_bytes!("../assets/gifs/check-facts.gif"),
     include_bytes!("../assets/gifs/bridge.gif"),
 ];
+const SYM_IMAGE: &[u8] = include_bytes!("../assets/symbolic/image.png");
+const SYM_SIGMA: &[u8] = include_bytes!("../assets/symbolic/sigma.png");
 const SYM_LEVELS: &[u8] = include_bytes!("../assets/symbolic/levels.png");
 const DOC_SD: &[u8] = include_bytes!("../assets/docs/structural-differential.png");
 

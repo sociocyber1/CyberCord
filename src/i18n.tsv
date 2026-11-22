@@ -393,3 +393,32 @@ pdf_saved	Saved: {path}	Сохранено: {path}	Збережено: {path}
 pdf_read	Read	Читать	Читати					
 ext_index_none	Remove index	Убрать индекс	Прибрати індекс					
 ext_index_pick	Choose the index	Выбрать индекс	Вибрати індекс					
+motto_sce	A world without politics, poverty and war · Resource-based economy	Мир без политики, нищеты и войн · Ресурсо-ориентированная экономика	Світ без політики, злиднів і воєн · Ресурсо-орієнтована економіка					
+motto_atom-generator	Food and materials from atoms · there's plenty of room at the bottom	Еда и материалы из атомов · внизу полно места (Фейнман)	Їжа й матеріали з атомів · внизу повно місця (Фейнман)					
+motto_automation	Automation frees people from routine	Автоматизация освобождает людей от рутины	Автоматизація звільняє людей від рутини					
+motto_ai-design	Cities and systems designed by science	Города и системы, спроектированные научно	Міста й системи, спроєктовані науково					
+motto_art	Art for people, not for the market	Искусство для людей, а не для рынка	Мистецтво для людей, а не для ринку					
+motto_creativity	Invent, test, share	Изобретай, проверяй, делись	Винаходь, перевіряй, ділись					
+motto_general-semantics	The map is not the territory · time-binding	Карта — не территория · связывание времени	Карта — не територія · зв'язування часу					
+motto_archives	Knowledge open to everyone	Знания открыты для всех	Знання відкриті для всіх					
+motto_help	Ask — people help, not a server	Спроси — помогут люди, а не сервер	Спитай — допоможуть люди, а не сервер					
+img_tip	Send a picture	Отправить картинку	Надіслати картинку					
+img_pick	Choose a picture	Выберите картинку	Виберіть картинку					
+math_tip	Formulas (LaTeX): $…$ inline, $$…$$ on its own line	Формулы (LaTeX): $…$ в строке, $$…$$ отдельной строкой	Формули (LaTeX): $…$ у рядку, $$…$$ окремим рядком					
+math_snippets	Insert:	Вставить:	Вставити:					
+math_preview	Preview	Предпросмотр	Попередній перегляд					
+math_help	Write LaTeX between $$ and $$, e.g. \frac{a}{b}, x^2, \sqrt{x}, \sum_{i=1}^n	Пишите LaTeX между $$ и $$, например \frac{a}{b}, x^2, \sqrt{x}, \sum_{i=1}^n	Пишіть LaTeX між $$ і $$, наприклад \frac{a}{b}, x^2, \sqrt{x}, \sum_{i=1}^n					
+block_scale	Scale	Шкала	Шкала					
+block_chart	Chart	График	Графік					
+block_edit	Edit	Изменить	Змінити					
+block_title	Title	Название	Назва					
+block_scale_hint	e.g. Prototype readiness	например, Готовность прототипа	наприклад, Готовність прототипу					
+block_value	Value	Значение	Значення					
+block_max	Out of	Из	З					
+block_note	Comment	Комментарий	Коментар					
+block_bar	Bars	Столбцы	Стовпці					
+block_line	Line	Линия	Лінія					
+block_add_row	+ Add a row	+ Добавить строку	+ Додати рядок					
+block_insert	Insert into message	Вставить в сообщение	Вставити в повідомлення					
+block_save	Save (new version)	Сохранить (новая версия)	Зберегти (нова версія)					
+atom_start	Where to start (document)	С чего начать (документ)	З чого почати (документ)					

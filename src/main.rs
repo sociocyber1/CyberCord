@@ -4,8 +4,10 @@
 
 mod app;
 mod camera;
+mod blocks;
 mod docs;
 mod fx;
+mod math;
 mod pdfview;
 mod emoji;
 mod i18n;

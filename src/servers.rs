@@ -17,7 +17,7 @@ pub struct Server {
 pub const SERVERS: &[Server] = &[
     Server {
         slug: "sce",
-        name: "SocioCyberneering Comms",
+        name: "SocioCyberneering Co-op",
         accent: (0x1C, 0x71, 0xD8), // blue
         channels: &[
             "welcome", "announcements", "rules-and-method",

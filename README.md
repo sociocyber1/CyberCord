@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.14</h1>
+<h1 align="center">CyberCord 0.15</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -97,7 +97,32 @@ CyberCord похож на Discord, но у него нет центрально�
   LaTeX (`docs/concept/cybercord-concept.tex`);
 - [История версий](CHANGELOG.md) · [Сторонние ресурсы](THIRD_PARTY.md).
 
-## Что нового в 0.14
+## Что нового в 0.15
+
+- **Формулы LaTeX в чате:** `$…$` в строке и `$$…$$` отдельной строкой —
+  дроби, корни, степени и индексы, греческие буквы, ∑ ∫ с пределами,
+  `\left( … \right)`. Кнопка **Σ** включает режим формул: панель вставки
+  (a/b, √x, xⁿ, ∑, ∫, α, π, ∞, ≤, →…) и живой предпросмотр.
+- **Шкала и график в сообщении:** ＋ → «Шкала» (название, значение, «из 5 /
+  10 / 100», комментарий) или «График» (столбцы или линия, строки «подпись =
+  число»), с предпросмотром. Автор правит их кнопкой «Изменить» — получается
+  новая версия с индексом и датой. В тексте это читаемые строки
+  `[scale: … = 7/10]` и `[chart bar: …] … [/chart]`.
+- **Кнопка с картинкой** — системный выбор файла (Linux через xdg-portal,
+  Windows — родной диалог); перетаскивание в окно тоже работает.
+- **SocioCyberneering Co-op** вместо «Comms» и девизы серверов: «Мир без
+  политики, нищеты и войн · Ресурсо-ориентированная экономика» и другие.
+- **Atom-Generator: с чего начать** — документ на сервере: откуда берутся
+  атомы (водород и гелий — Большой взрыв, углерод и кислород — звёзды),
+  почему «делать атомы» не нужно, зацепка с водородом как источником
+  энергии для бактерий, ступени от фотосинтеза до молекулярной сборки,
+  энергетический бюджет, первые шаги ([docs/atom-generator.ru.md](docs/atom-generator.ru.md)).
+
+![Формула, шкала и график в чате](docs/img/screen-math-chart.png)
+
+![Редактор графика](docs/img/screen-chart-editor.png)
+
+## Что было в 0.14
 
 - **Индексы — не только ₁.** Кнопка «Индекс» сама берёт следующий
   свободный номер: если в чате уже есть Иван₁ и Иван₃, предложит Иван₄. У
@@ -383,12 +408,12 @@ CyberCord похож на Discord, но у него нет центрально�
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.14.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.15.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.14.0-linux-x86_64.tar.gz
-cd cybercord-0.14.0-linux-x86_64
+tar xf cybercord-0.15.0-linux-x86_64.tar.gz
+cd cybercord-0.15.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -472,7 +497,7 @@ cd cybercord-0.14.0-linux-x86_64
 
 | Сервер | Голосовые каналы |
 |---|---|
-| SocioCyberneering Comms | lounge · venus-project-talks · city-design-meetup |
+| SocioCyberneering Co-op | lounge · venus-project-talks · city-design-meetup |
 | Atom-Generator | lab-talk · feynman-reading · office-hours |
 | Automation | pcb-review · embedded-hangout · hydroponics-lab |
 | AI Design | design-studio · simulation-jam · claude-news-live |
@@ -591,6 +616,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.15:** LaTeX formulas in chat (`$…$`, `$$…$$`) with a formula mode, snippet bar and live preview; scale and chart blocks with a friendly editor (authors edit them into a new indexed version); an image button with the system file dialog; "SocioCyberneering Co-op" and server mottos; an "Atom-Generator: where to start" document.
 
 **0.14:** smart indices (next free number from the chat, or pick ₁…₉), a short Watch Dogs-style "hacked text" + glitch animation for new messages (can be turned off), the SocioCyberneering Inc. brand always set in Montserrat, and a built-in PDF reader (hayro) with two embedded documents (in Russian) linked wherever they are mentioned.
 

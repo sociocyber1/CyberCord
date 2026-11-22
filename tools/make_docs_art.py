@@ -132,6 +132,29 @@ for i, (col, w) in enumerate([(GREEN5, 170), (ORANGE, 140), (RED, 110)]):
     b += f'<rect x="386" y="{y+12}" width="{w}" height="7" rx="3.5" fill="{L4}"/><rect x="386" y="{y+25}" width="{w-40}" height="7" rx="3.5" fill="{L3}"/>'
 imgs["structural-differential"] = b
 
+# 7. Atom-Generator: stars (H, He) → elements (C, N, O) → plant / bioreactor → food
+b = ''
+b += f'<circle cx="80" cy="120" r="44" fill="{YEL}"/><circle cx="80" cy="120" r="58" fill="{YEL}" opacity=".25"/>'
+for k in range(10):
+    a = 2 * math.pi * k / 10
+    b += f'<line x1="{80+50*math.cos(a):.1f}" y1="{120+50*math.sin(a):.1f}" x2="{80+66*math.cos(a):.1f}" y2="{120+66*math.sin(a):.1f}" stroke="{ORANGE}" stroke-width="4" stroke-linecap="round"/>'
+for (x, y, col) in [(70, 112, BLUE), (92, 130, PURP)]:
+    b += f'<circle cx="{x}" cy="{y}" r="9" fill="{col}"/>'
+arrow = lambda x: f'<path d="M{x} 120 h34 m-10 -9 l10 9 l-10 9" stroke="{INK2}" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+b += arrow(150)
+for i, col in enumerate([INK, BLUE, RED]):
+    y = 80 + i * 40
+    b += f'<circle cx="230" cy="{y}" r="15" fill="{col}"/><circle cx="230" cy="{y}" r="5" fill="#fff"/>'
+    b += f'<ellipse cx="230" cy="{y}" rx="26" ry="9" fill="none" stroke="{col}" stroke-width="2" opacity=".6"/>'
+b += arrow(272)
+b += f'<rect x="322" y="70" width="70" height="110" rx="14" fill="#dcebfb" stroke="{BLUE}" stroke-width="3"/><path d="M322 130 h70 v36 a14 14 0 0 1 -14 14 h-42 a14 14 0 0 1 -14 -14 z" fill="{GREEN}" opacity=".7"/>'
+for k in range(6):
+    b += f'<circle cx="{338 + (k % 3) * 18}" cy="{100 + (k // 3) * 16}" r="4" fill="{BLUE1}"/>'
+b += f'<path d="M357 60 v-14 m-8 6 h16" stroke="{INK2}" stroke-width="3" stroke-linecap="round"/>'
+b += arrow(404)
+b += f'<ellipse cx="490" cy="150" rx="44" ry="14" fill="{L3}"/><path d="M452 146 q38 -70 76 0 z" fill="{ORANGE}"/><circle cx="476" cy="118" r="9" fill="{RED}"/><circle cx="498" cy="112" r="10" fill="{GREEN}"/><path d="M490 102 q6 -14 16 -16" stroke="{GREEN5}" stroke-width="3" fill="none"/>'
+imgs["atom-generator"] = b
+
 for name, body in imgs.items():
     p = os.path.join(OUT, name + ".svg")
     open(p, "w").write(svg(body))

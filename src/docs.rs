@@ -16,6 +16,7 @@ pub enum Doc {
     WordsMatter,
     Consequences,
     Sce,
+    Atom,
 }
 
 impl Doc {
@@ -24,6 +25,7 @@ impl Doc {
             "words" => Some(Doc::WordsMatter),
             "cons" | "consequences" => Some(Doc::Consequences),
             "sce" => Some(Doc::Sce),
+            "atom" => Some(Doc::Atom),
             _ => None,
         }
     }
@@ -38,6 +40,8 @@ impl Doc {
             (Doc::Consequences, false) => include_str!("../docs/consequences.en.md"),
             (Doc::Sce, true) => include_str!("../docs/sociocyberneering.ru.md"),
             (Doc::Sce, false) => include_str!("../docs/sociocyberneering.en.md"),
+            (Doc::Atom, true) => include_str!("../docs/atom-generator.ru.md"),
+            (Doc::Atom, false) => include_str!("../docs/atom-generator.en.md"),
         }
     }
 }
@@ -49,6 +53,7 @@ pub fn image(stem: &str) -> Option<(&'static str, &'static [u8])> {
         "consequences-chain" => ("doc_cons_chain", include_bytes!("../assets/docs/consequences-chain.png")),
         "consequences-planet" => ("doc_cons_planet", include_bytes!("../assets/docs/consequences-planet.png")),
         "sce-city" => ("doc_sce_city", include_bytes!("../assets/docs/sce-city.png")),
+        "atom-generator" => ("doc_atom", include_bytes!("../assets/docs/atom-generator.png")),
         _ => return None,
     })
 }
@@ -59,7 +64,7 @@ pub enum Block<'a> {
     H1(&'a str),
     H2(&'a str),
     Para(String),
-    Item(&'a str),
+    Item(String),
     Image(&'a str),
     Link(&'a str, &'a str),
     Rule,
@@ -109,7 +114,13 @@ pub fn parse(md: &str) -> Vec<Block<'_>> {
             }
         } else if let Some(it) = l.strip_prefix("- ") {
             flush(&mut para, &mut out);
-            out.push(Block::Item(it.trim()));
+            out.push(Block::Item(it.trim().to_string()));
+        } else if l.starts_with("  ") && para.is_empty() && matches!(out.last(), Some(Block::Item(_))) {
+            // continuation of a list item
+            if let Some(Block::Item(t)) = out.last_mut() {
+                t.push(' ');
+                t.push_str(l.trim());
+            }
         } else if let Some((t, u)) = whole_link(l) {
             flush(&mut para, &mut out);
             out.push(Block::Link(t, u));
@@ -214,14 +225,14 @@ pub fn show(ui: &mut egui::Ui, md: &str, tex: &mut dyn FnMut(&egui::Context, &'s
                 ui.horizontal_top(|ui| {
                     ui.add_space(6.0);
                     ui.label(RichText::new("•").color(c.accent).size(15.0));
-                    if let Some((text, url)) = whole_link(t).filter(|(_, u)| internal(u)) {
+                    if let Some((text, url)) = whole_link(&t).filter(|(_, u)| internal(u)) {
                         if ui.link(RichText::new(format!("PDF · {text}")).size(15.0).color(c.accent)).clicked() {
                             clicked = Some(url.to_string());
                         }
-                    } else if let Some((text, url)) = whole_link(t) {
+                    } else if let Some((text, url)) = whole_link(&t) {
                         ui.hyperlink_to(RichText::new(text).size(15.0).color(c.accent), url).on_hover_text(url);
                     } else {
-                        ui.add(egui::Label::new(inline_job(t, 15.0, c.ink, w - 28.0)).wrap());
+                        ui.add(egui::Label::new(inline_job(&t, 15.0, c.ink, w - 28.0)).wrap());
                     }
                 });
                 ui.add_space(3.0);
@@ -263,7 +274,7 @@ mod tests {
 
     #[test]
     fn all_documents_parse_and_have_pictures() {
-        for d in [Doc::WordsMatter, Doc::Consequences, Doc::Sce] {
+        for d in [Doc::WordsMatter, Doc::Consequences, Doc::Sce, Doc::Atom] {
             for l in [Lang::Ru, Lang::En] {
                 let blocks = parse(d.text(l));
                 assert!(matches!(blocks.first(), Some(Block::H1(_))), "{d:?}");
