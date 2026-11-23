@@ -76,7 +76,7 @@ starting	starting…	запуск…	запуск…	startet…	iniciando…	dé
 add_a_friend	Add a friend	Добавить друга	Додати друга	Freund hinzufügen	Añadir amigo	Ajouter un ami	添加好友	フレンドを追加
 name	Name	Имя	Ім'я	Name	Nombre	Nom	名称	名前
 name_hint	what to call them	как его называть	як його називати	wie du ihn nennst	cómo llamarlo	comment l'appeler	怎么称呼对方	呼び名
-their_code	Their ID or connect code	Его ID или код подключения	Його ID або код підключення	Seine ID oder sein Verbindungscode	Su ID o código de conexión	Son ID ou code de connexion	对方的 ID 或连接代码	相手のIDまたは接続コード
+their_code	Their @handle, ID or connect code	Его @ник, ID или код подключения	Його @нік, ID або код підключення	@Handle, ID oder Code	Su @alias, ID o código	Son @pseudo, ID ou code	对方的 @昵称、ID 或代码	相手の @ハンドル、ID、コード
 add_btn	Add friend	Добавить	Додати	Hinzufügen	Añadir	Ajouter	添加	追加
 own_code	That's your own code.	Это ваш собственный код.	Це ваш власний код.	Das ist dein eigener Code.	Ese es tu propio código.	C'est votre propre code.	这是你自己的代码。	それはあなた自身のコードです。
 added	Added {name}. Looking for them in the network…	{name} добавлен. Ищем в сети…	{name} додано. Шукаємо в мережі…	{name} hinzugefügt. Suche im Netz…	{name} añadido. Buscando en la red…	{name} ajouté. Recherche sur le réseau…	已添加 {name}，正在网络中查找…	{name} を追加しました。ネットワークで検索中…
@@ -256,7 +256,7 @@ node_friend	Friend	Друг	Друг	Freund	Amigo	Ami	好友	フレンド
 relays_us	relays for you	передаёт данные для вас	передає дані для вас	leitet für dich weiter	hace de relay para ti	relaie pour vous	为你中继	あなたを中継中
 we_relay	you relay for it	вы передаёте данные для него	ви передаєте дані для нього	du leitest dafür weiter	haces de relay para él	vous relayez pour lui	你为它中继	あなたが中継中
 find_people	Find people	Найти людей	Знайти людей	Menschen finden	Buscar personas	Trouver des personnes	找人	人を探す
-find_hint	Name or ID…	Имя или ID…	Ім'я або ID…	Name oder ID…	Nombre o ID…	Nom ou ID…	名字或 ID…	名前または ID…
+find_hint	Name, @handle or ID…	Имя, @ник или ID…	Ім'я, @нік або ID…	Name, @Handle oder ID…	Nombre, @alias o ID…	Nom, @pseudo ou ID…	名字、@昵称或 ID…	名前、@ハンドル、ID…
 find_none	No one yet — the search keeps looking for 30 seconds (network + DHT).	Пока никого — поиск продолжается 30 секунд (сеть + DHT).	Поки нікого — пошук триває 30 секунд (мережа + DHT).	Noch niemand — die Suche läuft 30 Sekunden weiter (Netz + DHT).	Nadie todavía: la búsqueda sigue 30 segundos (red + DHT).	Personne pour l'instant — la recherche continue 30 secondes (réseau + DHT).	暂无结果——搜索会持续 30 秒（网络 + DHT）。	まだ見つかりません — 30 秒間探し続けます（ネットワーク + DHT）。
 find_dht	found through DHT	найден через DHT	знайдено через DHT	über DHT gefunden	encontrado por DHT	trouvé via DHT	通过 DHT 找到	DHT で発見
 last_seen	last seen {t}	был(а) {t}	був(ла) {t}	zuletzt {t}	visto {t}	vu {t}	最后在线 {t}	最終 {t}
@@ -685,3 +685,10 @@ addf_s1	1. Find them by name	1. Найдите по имени	1. Знайдіт
 addf_s2	2. Or send your code to your friend	2. Или отправьте другу свой код	2. Або надішліть другові свій код	2. Oder senden Sie Ihren Code	2. O envía tu código a tu amigo	2. Ou envoyez votre code à votre ami	2. 或把你的代码发给朋友	2. または自分のコードを送る
 addf_s3	3. …and paste the code your friend sent you	3. …и вставьте код, который прислал друг	3. …і вставте код, який надіслав друг	3. …und fügen Sie den Code Ihres Freundes ein	3. …y pega el código de tu amigo	3. …et collez le code de votre ami	3. …并粘贴朋友发来的代码	3. …友だちのコードを貼り付ける
 addf_not_yet	Your friend has no CyberCord yet?	Друга ещё нет в CyberCord?	Друга ще немає в CyberCord?	Ihr Freund hat noch kein CyberCord?	¿Tu amigo aún no tiene CyberCord?	Votre ami n'a pas encore CyberCord ?	朋友还没有 CyberCord？	友だちはまだ CyberCord を使っていない？
+handle_your	Your handle — send it to a friend	Ваш ник — отправьте его другу	Ваш нік — надішліть його другові	Ihr Handle — schicken Sie ihn	Tu alias — envíaselo a un amigo	Votre pseudo — envoyez-le	你的昵称 — 发给朋友	あなたのハンドル — 友だちに送る
+handle_copy	Copy handle	Копировать ник	Копіювати нік	Handle kopieren	Copiar alias	Copier le pseudo	复制昵称	ハンドルをコピー
+handle_how	Your friend pastes it into “Add a friend” (the green +). It is found through the network of users' own computers, anywhere on the internet — no server keeps a list. The six characters at the end come from your key, so nobody can take your handle.	Друг вставляет его в «Добавить друга» (зелёный «+»). Он находится через сеть компьютеров самих пользователей, в любой точке интернета — списка на сервере нет. Шесть знаков в конце вычислены из вашего ключа, поэтому занять ваш ник никто не может.	Друг вставляє його в «Додати друга» (зелений «+»). Він знаходиться через мережу комп'ютерів самих користувачів, будь-де в інтернеті — списку на сервері немає. Шість знаків у кінці обчислені з вашого ключа, тому зайняти ваш нік ніхто не може.					
+handle_full	Full code (if the handle is not found)	Полный код (если ник не находится)	Повний код (якщо нік не знаходиться)	Vollständiger Code	Código completo	Code complet	完整代码	完全なコード
+handle_searching	Looking for {h} in the network… it is added as soon as it answers (up to 40 s).	Ищу {h} в сети… друг добавится, как только ответит (до 40 с).	Шукаю {h} у мережі… друг додасться, щойно відповість (до 40 с).					
+handle_not_found	Not found yet: your friend may be offline. Try later, or ask for the full code.	Пока не найден: возможно, друг не в сети. Попробуйте позже или попросите полный код.	Поки не знайдено: можливо, друг не в мережі. Спробуйте пізніше або попросіть повний код.					
+handle_click_copy	Click to copy	Нажмите, чтобы скопировать	Натисніть, щоб скопіювати	Klicken zum Kopieren	Clic para copiar	Cliquer pour copier	点击复制	クリックでコピー

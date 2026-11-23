@@ -224,6 +224,8 @@ pub struct CyberApp {
     call_tone_at: Option<Instant>,
     show_invite: bool,
     show_add_friend: bool,
+    /// adding a friend by handle: (tag, name to give them, since)
+    pending_handle: Option<(String, String, Instant)>,
     invite_qr: Option<egui::TextureHandle>,
     /// Scientific article search
     show_papers: bool,
@@ -402,6 +404,7 @@ impl CyberApp {
             call_tone_at: None,
             show_invite: false,
             show_add_friend: false,
+            pending_handle: None,
             invite_qr: None,
             show_papers: false,
             papers: crate::papers::Search::default(),
@@ -715,6 +718,15 @@ impl CyberApp {
                 UiEvent::Nodes(list) => self.nodes = list,
                 UiEvent::Transfers(list) => self.transfers = list,
                 UiEvent::Search { query, users } => {
+                    if let Some((tag, nm, _)) = self.pending_handle.clone() {
+                        if let Some(u) = users.iter().find(|u| cybercord_node::types::handle_tag(&u.peer) == tag) {
+                            let name = if nm.is_empty() { u.name.clone() } else { nm };
+                            self.pending_handle = None;
+                            self.befriend(&u.peer.clone(), &name, true);
+                            self.add_msg = self.t("added").replace("{name}", &name);
+                            self.show_add_friend = false;
+                        }
+                    }
                     if query == self.search_q.trim() {
                         self.search_res = users;
                     }
@@ -1436,6 +1448,12 @@ impl eframe::App for CyberApp {
         self.profile_window(ctx);
         self.city_welcome_window(ctx);
         self.call_tick(ctx);
+        if let Some((_, _, since)) = &self.pending_handle {
+            if since.elapsed().as_secs() >= 40 {
+                self.pending_handle = None;
+                self.add_msg = self.t("handle_not_found").to_string();
+            }
+        }
         self.call_window(ctx);
         self.invite_window(ctx);
         self.add_friend_window(ctx);
@@ -2996,7 +3014,37 @@ impl CyberApp {
     }
 
     /// "Your code": the connect code with copy buttons.
+    fn my_handle(&self) -> String {
+        format!("@{}", cybercord_node::types::handle(&self.self_name, &self.self_id))
+    }
+
     fn my_code_body(&mut self, ui: &mut egui::Ui) {
+        // the short handle first: one line, easy to send
+        let h = self.my_handle();
+        let c = th();
+        egui::Frame::none().fill(c.accent.gamma_multiply(0.10)).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(self.t("handle_your")).color(c.ink2).small());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&h).color(c.accent).b().size(22.0).monospace());
+                ui.add_space(8.0);
+                if ui.add(egui::Button::new(RichText::new(self.t("handle_copy")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(0.0, 30.0))).clicked() {
+                    ui.output_mut(|o| o.copied_text = h.clone());
+                    let m = self.t("code_copied").to_string();
+                    self.toast(m);
+                }
+            });
+            ui.add(egui::Label::new(RichText::new(self.t("handle_how")).color(c.ink2).small()).wrap());
+        });
+        ui.add_space(4.0);
+        let label = self.t("handle_full").to_string();
+        egui::CollapsingHeader::new(label).id_source("full_code").default_open(false).show(ui, |ui| {
+            self.full_code_body(ui);
+        });
+    }
+
+    /// The long connect code (ID + addresses) — works even when the DHT is not reachable.
+    fn full_code_body(&mut self, ui: &mut egui::Ui) {
         let code = self.connect_code();
         ui.colored_label(th().ink2, self.t("your_code_body"));
         ui.add_space(6.0);
@@ -3027,10 +3075,21 @@ impl CyberApp {
         });
         ui.add_space(4.0);
         ui.colored_label(th().ink2, self.t("their_code"));
-        ui.add(egui::TextEdit::multiline(&mut self.add_code).font(egui::TextStyle::Monospace).hint_text("12D3Koo…   /ip4/…/p2p/12D3Koo…").desired_rows(3).desired_width(f32::INFINITY));
+        ui.add(egui::TextEdit::multiline(&mut self.add_code).font(egui::TextStyle::Monospace).hint_text("@alisa-7kq2m9   ·   12D3Koo…   ·   /ip4/…/p2p/12D3Koo…").desired_rows(2).desired_width(f32::INFINITY));
         ui.add_space(6.0);
         if ui.add(egui::Button::new(RichText::new(self.t("add_btn")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
+            let handle_tag = cybercord_node::types::parse_handle(&self.add_code);
             match parse_connect_code(&self.add_code) {
+                _ if handle_tag.as_deref() == Some(cybercord_node::types::handle_tag(&self.self_id).as_str()) => self.add_msg = self.t("own_code").to_string(),
+                None if handle_tag.is_some() => {
+                    // a handle: look it up in the users' DHT, add when it answers
+                    let q = self.add_code.trim().to_string();
+                    self.pending_handle = Some((handle_tag.clone().unwrap_or_default(), self.add_name.trim().to_string(), Instant::now()));
+                    self.search_q = q.clone();
+                    self.search_res.clear();
+                    let _ = self.handle.cmd_tx.send(Cmd::Search(q.clone()));
+                    self.add_msg = self.t("handle_searching").replace("{h}", &q);
+                }
                 Some((peer_id, _)) if peer_id == self.self_id => self.add_msg = self.t("own_code").to_string(),
                 Some((peer_id, addrs)) => {
                     let name = if self.add_name.trim().is_empty() { short(&peer_id) } else { self.add_name.trim().to_string() };
@@ -3122,7 +3181,7 @@ impl CyberApp {
         }
         let c = th();
         let ru = matches!(self.lang, Lang::Ru | Lang::Uk);
-        let text = crate::invite::text(ru, &self.self_name);
+        let text = crate::invite::text(ru, &cybercord_node::types::handle(&self.self_name, &self.self_id));
         if self.invite_qr.is_none() {
             if let Some(img) = crate::invite::qr_image(crate::invite::DOWNLOAD, 6) {
                 let ci = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
@@ -3170,7 +3229,7 @@ impl CyberApp {
     }
 
     fn save_invite_card(&mut self) {
-        let img = crate::invite::card(&self.self_name, self.t("invite_tagline"), self.t("motto_sce"), self.t("invite_find_me"), self.t("invite_scan_short"));
+        let img = crate::invite::card(&self.my_handle(), self.t("invite_tagline"), self.t("motto_sce"), self.t("invite_find_me"), self.t("invite_scan_short"));
         let dir = cybercord_node::transfer::download_dir();
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("cybercord-invite.png");
@@ -3704,6 +3763,10 @@ impl CyberApp {
                     // name, version index and date — the person is indexed and dated too
                     let idx = p.as_ref().map(|p| format!("{}{}", self.t("version_n"), subscript(p.rev.max(1)))).unwrap_or_default();
                     ui.label(RichText::new(&name).color(c.ink).b().size(19.0));
+                    let h = format!("@{}", cybercord_node::types::handle(&name, &peer));
+                    if ui.add(egui::Label::new(RichText::new(&h).color(c.accent).monospace()).sense(egui::Sense::click())).on_hover_text(self.t("handle_click_copy")).clicked() {
+                        ui.output_mut(|o| o.copied_text = h.clone());
+                    }
                     if let Some(p) = &p {
                         ui.label(RichText::new(format!("{idx} · {}", short_date(p.ts_ms))).color(c.ink2).small());
                         let code = p.code();
@@ -6227,7 +6290,7 @@ impl CyberApp {
                     let online = u.online && u.status != "offline";
                     let status = if online && !u.status.is_empty() { self.status_label(&u.status).to_string() } else if online { self.t("lg_online").to_string() } else { self.t("last_seen").replace("{t}", &self.ago(u.last_seen_ms)) };
                     let via = if u.via == "dht" { format!(" · {}", self.t("find_dht")) } else { String::new() };
-                    ui.colored_label(c.ink2, RichText::new(format!("{status} · {}{via}", short(&u.peer))).small());
+                    ui.colored_label(c.ink2, RichText::new(format!("{status} · @{}{via}", cybercord_node::types::handle(&u.name, &u.peer))).small());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.friends.contains_key(&u.peer) {

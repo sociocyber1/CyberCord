@@ -13,19 +13,19 @@ const INTER_SEMI: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.otf");
 const ICON: &[u8] = include_bytes!("../assets/icon-256.png");
 
 /// The invitation text, ready to paste into any messenger.
-pub fn text(ru: bool, my_name: &str) -> String {
+pub fn text(ru: bool, my_handle: &str) -> String {
     if ru {
         format!(
             "Привет! Я общаюсь в CyberCord — чат и голосовые без серверов: каждый пользователь сам узел сети, переписка хранится у нас, а не у компании.\n\n\
              1. Скачай (Linux / Windows): {DOWNLOAD}\n\
-             2. Друзья → «Найти людей» → набери «{my_name}» и добавь меня.\n\n\
+             2. Нажми зелёный «+» слева и вставь мой ник: @{my_handle}\n\n\
              Мир без политики, нищеты и войн · SocioCyberneering Inc."
         )
     } else {
         format!(
             "Hi! I talk on CyberCord — chat and voice without servers: every user is a node, messages stay with us, not with a company.\n\n\
              1. Download (Linux / Windows): {DOWNLOAD}\n\
-             2. Friends → \u{201c}Find people\u{201d} → type \u{201c}{my_name}\u{201d} and add me.\n\n\
+             2. Press the green \u{201c}+\u{201d} on the left and paste my handle: @{my_handle}\n\n\
              A world without politics, poverty and war · SocioCyberneering Inc."
         )
     }

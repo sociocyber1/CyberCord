@@ -260,6 +260,100 @@ pub struct UserCard {
     pub status: String,
 }
 
+// ---- short handles: @name-xxxxxx ----
+//
+// The six characters after the dash come from the user's key (their peer ID),
+// so a handle cannot be taken over: a node answers to "@alisa-7kq2m9" only if
+// its own ID hashes to "7kq2m9". The name part is just for people; it may
+// change, the tail stays. Handles are found through the CyberCord DHT
+// (Kademlia over users' own nodes) — no server keeps a list.
+
+const TAG_ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz"; // Crockford: no i l o u
+
+/// The six-character tag of a peer ID (30 bits).
+pub fn handle_tag(peer_id: &str) -> String {
+    let h = blake3::hash(format!("cybercord/handle/v1/{peer_id}").as_bytes());
+    let b = h.as_bytes();
+    let mut v: u64 = 0;
+    for &x in &b[..5] {
+        v = (v << 8) | x as u64;
+    }
+    (0..6).map(|i| TAG_ALPHABET[((v >> (35 - i * 5)) & 31) as usize] as char).collect()
+}
+
+/// Latin, lower-case, a–z 0–9 and "_", at most 16 characters.
+pub fn handle_slug(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.trim().to_lowercase().chars() {
+        let t: &str = match ch {
+            'а' => "a", 'б' => "b", 'в' => "v", 'г' => "g", 'д' => "d", 'е' | 'ё' | 'э' => "e", 'ж' => "zh", 'з' => "z",
+            'и' | 'й' | 'і' | 'ї' => "i", 'к' => "k", 'л' => "l", 'м' => "m", 'н' => "n", 'о' => "o", 'п' => "p", 'р' => "r",
+            'с' => "s", 'т' => "t", 'у' => "u", 'ф' => "f", 'х' => "h", 'ц' => "ts", 'ч' => "ch", 'ш' => "sh", 'щ' => "sch",
+            'ъ' | 'ь' => "", 'ы' => "y", 'ю' => "yu", 'я' => "ya", 'є' => "ye", 'ґ' => "g",
+            c if c.is_ascii_alphanumeric() => {
+                out.push(c);
+                continue;
+            }
+            _ => "_",
+        };
+        out.push_str(t);
+    }
+    let mut s = String::new();
+    for c in out.chars() {
+        if c == '_' && (s.is_empty() || s.ends_with('_')) {
+            continue;
+        }
+        s.push(c);
+    }
+    let s: String = s.trim_end_matches('_').chars().take(16).collect();
+    let s = s.trim_end_matches('_').to_string();
+    if s.is_empty() { "user".into() } else { s }
+}
+
+/// "alisa-7kq2m9" (show it with "@").
+pub fn handle(name: &str, peer_id: &str) -> String {
+    format!("{}-{}", handle_slug(name), handle_tag(peer_id))
+}
+
+/// "@alisa-7kq2m9" / "alisa-7kq2m9" / "7kq2m9"? → the tag "7kq2m9".
+pub fn parse_handle(s: &str) -> Option<String> {
+    let s = s.trim().trim_start_matches('@').to_lowercase();
+    let tag = s.rsplit('-').next()?;
+    if s.contains('-') && tag.len() == 6 && tag.bytes().all(|b| TAG_ALPHABET.contains(&b)) {
+        Some(tag.to_string())
+    } else {
+        None
+    }
+}
+
+/// DHT key under which a user announces their handle tag.
+pub fn handle_key(tag: &str) -> Vec<u8> {
+    blake3::hash(format!("cybercord/handle-key/v1/{tag}").as_bytes()).as_bytes().to_vec()
+}
+
+#[cfg(test)]
+mod handle_tests {
+    use super::*;
+
+    #[test]
+    fn handles() {
+        let id = "12D3KooWStFpBXZXPx8m1hnNdikEdc6zRUA8vFrzULvJHKjyy8bs";
+        let t = handle_tag(id);
+        assert_eq!(t.len(), 6);
+        assert_eq!(t, handle_tag(id));
+        assert_ne!(t, handle_tag("12D3KooWFXre6ui8EpUWFTm19vdM15bxg2iShAz5XjSU5qTypg8H"));
+        assert_eq!(handle_slug("Алиса"), "alisa");
+        assert_eq!(handle_slug("Иван Петров"), "ivan_petrov");
+        assert_eq!(handle_slug("SocioCyber (Sinus)"), "sociocyber_sinus");
+        assert_eq!(handle_slug("!!!"), "user");
+        let h = handle("Алиса", id);
+        assert_eq!(parse_handle(&format!("@{h}")), Some(t.clone()));
+        assert_eq!(parse_handle(&h.to_uppercase()), Some(t));
+        assert_eq!(parse_handle("alisa"), None);
+        assert_eq!(parse_handle("12D3KooWStFp"), None);
+    }
+}
+
 /// DHT key for a name prefix (people search): providers of this key are users
 /// whose display name starts with the prefix.
 pub fn name_key(prefix: &str) -> Vec<u8> {

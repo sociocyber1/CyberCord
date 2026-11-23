@@ -402,6 +402,10 @@ fn provide_name(swarm: &mut Swarm<CyberBehaviour>, name: &str, provided: &mut Ve
     for k in provided.drain(..) {
         swarm.behaviour_mut().kad.stop_providing(&k);
     }
+    // the handle tag: findable by "@name-xxxxxx" (shared on purpose by its owner)
+    let me = swarm.local_peer_id().to_base58();
+    let key = kad::RecordKey::new(&crate::types::handle_key(&crate::types::handle_tag(&me)));
+    let _ = swarm.behaviour_mut().kad.start_providing(key);
     for p in name_prefixes(name) {
         let key = kad::RecordKey::new(&name_key(&p));
         if swarm.behaviour_mut().kad.start_providing(key.clone()).is_ok() {
@@ -753,8 +757,12 @@ async fn run(
                         if q.is_empty() {
                             search = None;
                         } else {
-                            // Ask the DHT name index too (finds users our gossip hasn't reached).
-                            if q.chars().count() >= 3 && parse_peer(&q).is_none() {
+                            // A handle: ask who provides its tag (users anywhere, not just here).
+                            if let Some(tag) = crate::types::parse_handle(&q) {
+                                let id = swarm.behaviour_mut().kad.get_providers(kad::RecordKey::new(&crate::types::handle_key(&tag)));
+                                search_queries.insert(id, q.to_lowercase());
+                            } else if q.chars().count() >= 3 && parse_peer(&q).is_none() {
+                                // Ask the DHT name index too (finds users our gossip hasn't reached).
                                 let id = swarm.behaviour_mut().kad.get_providers(kad::RecordKey::new(&name_key(&q)));
                                 search_queries.insert(id, q.to_lowercase());
                             }
@@ -1236,9 +1244,17 @@ async fn run(
                 if let Some((q, at)) = &search {
                     if at.elapsed() < Duration::from_secs(30) {
                         let ql = q.to_lowercase();
+                        let tag = crate::types::parse_handle(q);
                         let mut users: Vec<UserCard> = dir
                             .iter()
-                            .filter(|(p, (n, _, l))| *l && **p != local_id && (n.to_lowercase().contains(&ql) || p.starts_with(q.as_str())))
+                            .filter(|(p, (n, _, l))| {
+                                **p != local_id
+                                    && match &tag {
+                                        // a handle is shared on purpose: found even if not listed by name
+                                        Some(t) => crate::types::handle_tag(p) == *t,
+                                        None => *l && (n.to_lowercase().contains(&ql) || p.starts_with(q.as_str())),
+                                    }
+                            })
                             .map(|(p, (n, t, _))| UserCard {
                                 peer: p.clone(),
                                 name: n.clone(),
@@ -1435,8 +1451,10 @@ async fn run(
                         } else if let kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. })) = result {
                             // People search through the DHT name index: meet these users so
                             // their heartbeat (name) reaches us. At most 8 dials per answer.
-                            if search_queries.contains_key(&id) {
-                                for pid in providers.into_iter().filter(|p| *p != local_peer).take(8) {
+                            if let Some(q) = search_queries.get(&id).cloned() {
+                                // for a handle, only nodes whose own ID gives that tag
+                                let tag = crate::types::parse_handle(&q);
+                                for pid in providers.into_iter().filter(|p| *p != local_peer).filter(|p| tag.as_ref().map(|t| crate::types::handle_tag(&p.to_base58()) == *t).unwrap_or(true)).take(8) {
                                     dht_found.insert(pid.to_base58());
                                     book.learn(pid, std::iter::empty(), "search");
                                     if !connected_peers.contains(&pid) {

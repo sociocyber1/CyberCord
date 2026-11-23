@@ -134,7 +134,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(path) = &args.export_card {
         let lang = i18n::system();
         let tr = |k: &str| i18n::tr_dyn(lang, k);
-        invite::card(&args.name, tr("invite_tagline"), tr("motto_sce"), tr("invite_find_me"), tr("invite_scan_short")).save(path)?;
+        invite::card(&format!("@{}-7kq2m9", cybercord_node::types::handle_slug(&args.name)), tr("invite_tagline"), tr("motto_sce"), tr("invite_find_me"), tr("invite_scan_short")).save(path)?;
         return Ok(());
     }
     if args.dev {
@@ -206,6 +206,7 @@ commands:
   /nodes                         the nodes this node knows (the network map)
   /voice [guild/room]            join a voice channel (e.g. /voice sce/lounge)
   /leave                         leave voice
+  /handle                        your short handle (@name-xxxxxx); /find @name-xxxxxx finds anyone
   /call <friend>                 ring a friend (they answer in the window)
   /answer, /decline, /hangup     answer / decline the last call, hang up
   /quit
@@ -401,6 +402,7 @@ fn run_headless(cfg: NetConfig, channel: &str, bot_room: Option<String>) -> anyh
                 "quit" | "exit" => break,
                 "help" => println!("{HELP}"),
                 "id" => println!("your ID: {}", my_id.lock().unwrap()),
+                "handle" => println!("your handle: @{}", cybercord_node::types::handle(&name, &my_id.lock().unwrap())),
                 "net" => println!("{}", stats.lock().unwrap()),
                 "voice" => {
                     let ch = if arg.is_empty() { current.clone() } else { parse_channel(arg) };

@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.20</h1>
+<h1 align="center">CyberCord 0.21</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -112,12 +112,27 @@ QR-код со ссылкой на скачивание и **карточка-к
 шестерёнкой внизу, и в списке друзей). Откроется одно окно:
 
 1. **найти по имени**;
-2. или **скопировать свой код** и отправить другу в любом мессенджере;
-3. **вставить код**, который прислал друг.
+2. или **скопировать свой ник** — короткий, в одну строку, например
+   `@alisa-t8mk11` — и отправить другу в любом мессенджере;
+3. **вставить ник** (или длинный код), который прислал друг.
+
+**Ник** — это имя латиницей и шесть знаков, вычисленных из ключа
+пользователя. Поэтому его нельзя занять или подделать: на ник отвечает
+только узел, чей ключ даёт эти шесть знаков. Ищется ник через DHT самих
+пользователей (Kademlia поверх их узлов, вход в сеть — через DHT
+BitTorrent): **где угодно в интернете, без сервера со списком**, без
+единой точки отказа, и вам не нужно ничего хранить.
 
 Пока друзей нет, «+» мягко пульсирует, чтобы его было сразу видно.
 
 ![Добавить друга](docs/img/screen-add-friend.png)
+
+## Что нового в 0.21
+
+- **Короткие ники** `@имя-xxxxxx` вместо длинного кода: в «Добавить
+  друга», в поиске людей, в профиле (нажмите — скопируется), в
+  приглашении и на карточке. Друг вставляет ник — CyberCord находит его в
+  сети и добавляет. Полный код остался под «Полный код».
 
 ## Что нового в 0.20
 
@@ -572,12 +587,12 @@ QR-код со ссылкой на скачивание и **карточка-к
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.20.1-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.21.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.20.1-linux-x86_64.tar.gz
-cd cybercord-0.20.1-linux-x86_64
+tar xf cybercord-0.21.0-linux-x86_64.tar.gz
+cd cybercord-0.21.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -783,6 +798,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.21:** short handles `@name-xxxxxx` (the tail is derived from the user's key, so it cannot be taken over), found anywhere through the users' own DHT — no server keeps a list.
 
 **0.20.1:** a green "+" (top of the left bar, next to the settings gear, in the friends list) opens one "Add a friend" window: search by name, copy your code, paste theirs; it pulses while you have no friends yet.
 
