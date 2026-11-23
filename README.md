@@ -10,6 +10,11 @@
   </picture>
 </p>
 <p align="center"><b>Чат, голос, музыка и видео-кружки без серверов</b> — Communication Cooperations</p>
+<p align="center">
+  <a href="https://github.com/sociocyber1/CyberCord/releases/latest"><b>Скачать для Linux и Windows</b></a> ·
+  <a href="https://boosty.to/scelab"><b>Поддержать автора на Boosty</b></a> ·
+  <a href="mailto:sociocyber1@gmail.com">sociocyber1@gmail.com</a>
+</p>
 
 ## Суть проекта
 
@@ -675,12 +680,12 @@ CyberCord не должен становиться инструментом дл
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.24.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.24.1-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.24.0-linux-x86_64.tar.gz
-cd cybercord-0.24.0-linux-x86_64
+tar xf cybercord-0.24.1-linux-x86_64.tar.gz
+cd cybercord-0.24.1-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -944,3 +949,25 @@ It also fixes history and media sync for late joiners.
 
 Build with `cargo build --release --features camera` (add `voice` for audio).
 For testing alone, see `scripts/peers.sh` and `--headless` (`/help`).
+
+---
+
+## Поддержать автора и разработку
+
+У CyberCord нет рекламы, инвесторов и серверов, на которых продают ваши
+данные. Он живёт благодаря помощи тех, кто им пользуется:
+**[boosty.to/scelab](https://boosty.to/scelab)**. В приложении — ссылка
+«Поддержать» в строке состояния внизу и в «О программе».
+
+## Контакты
+
+**sociocyber1@gmail.com**
+
+## Другие проекты
+
+- **CyberVPN** — VPN-клиент для Linux и Windows (Hysteria2):
+  [github.com/sociocyber1/CyberVPN](https://github.com/sociocyber1/CyberVPN)
+- **CyberVPN для Android** — в разработке, APK скоро:
+  [github.com/sociocyber1/CyberVPN-Android](https://github.com/sociocyber1/CyberVPN-Android)
+
+<p align="center"><sub>SocioCyberneering Inc. — мир без политики, нищеты и войн · ресурсо-ориентированная экономика</sub></p>

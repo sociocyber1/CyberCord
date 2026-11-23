@@ -30,6 +30,11 @@ use crate::theme::{self, p as th};
 // Colours come from the active theme: see `theme.rs` and `p()`.
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Support the author and development.
+const SUPPORT_URL: &str = "https://boosty.to/scelab";
+const CONTACT_EMAIL: &str = "sociocyber1@gmail.com";
+/// CyberVPN for Android (the repository for now; the latest APK once released).
+const ANDROID_URL: &str = "https://github.com/sociocyber1/CyberVPN-Android";
 
 
 fn short(id: &str) -> String {
@@ -1871,9 +1876,16 @@ impl CyberApp {
                         docs::brand(ui, "SocioCyberneering Inc.", 12.0, th().ink);
                     }
                     ui.separator();
-                    let hub = self.hub.as_deref().map(short).unwrap_or_else(|| "—".into());
-                    ui.colored_label(th().ink2, RichText::new(format!("{}: {hub}", self.t("hub_label"))).small());
+                    // the hub is also shown in the member list; here only when there is room
+                    if ui.ctx().screen_rect().width() >= 1360.0 {
+                        let hub = self.hub.as_deref().map(short).unwrap_or_else(|| "—".into());
+                        ui.colored_label(th().ink2, RichText::new(format!("{}: {hub}", self.t("hub_label"))).small());
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new(self.t("support_btn")).small().b().color(th().accent)).frame(false)).on_hover_text(self.t("support_tip")).clicked() {
+                            open_path(std::path::Path::new(SUPPORT_URL));
+                        }
+                        ui.separator();
                         if let crate::update::State::Available(r) = self.updater.get() {
                             if ui.add(egui::Button::new(RichText::new(self.t("upd_chip").replace("{v}", &r.version)).small().b().color(th().on_accent)).fill(th().green).rounding(Rounding::same(4.0))).clicked() {
                                 self.show_settings = true;
@@ -6336,6 +6348,33 @@ impl CyberApp {
                     self.open_builtin_pdf(file);
                 }
             }
+        });
+        ui.add_space(14.0);
+        egui::Frame::none().fill(c.accent.gamma_multiply(0.10)).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(self.t("support_h")).color(c.ink).b());
+            ui.add(egui::Label::new(RichText::new(self.t("support_body")).color(c.ink2)).wrap());
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui.add(egui::Button::new(RichText::new(self.t("support_boosty")).color(c.on_accent).b()).fill(c.accent).rounding(Rounding::same(8.0)).min_size(egui::vec2(0.0, 32.0))).clicked() {
+                    open_path(std::path::Path::new(SUPPORT_URL));
+                }
+                if ui.button(format!("{}: {CONTACT_EMAIL}", self.t("contact_label"))).on_hover_text(self.t("contact_tip")).clicked() {
+                    ui.output_mut(|o| o.copied_text = CONTACT_EMAIL.to_string());
+                    open_path(std::path::Path::new(&format!("mailto:{CONTACT_EMAIL}")));
+                }
+            });
+            ui.add_space(8.0);
+            ui.label(RichText::new(self.t("other_projects")).color(c.ink).b());
+            ui.horizontal_wrapped(|ui| {
+                if ui.link("CyberVPN — Linux / Windows").clicked() {
+                    open_path(std::path::Path::new("https://github.com/sociocyber1/CyberVPN"));
+                }
+                ui.label("·");
+                if ui.link(self.t("cybervpn_android")).clicked() {
+                    open_path(std::path::Path::new(ANDROID_URL));
+                }
+            });
         });
         ui.add_space(10.0);
         if ui.add(egui::Button::new(RichText::new(self.t("invite_btn")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0)).min_size(egui::vec2(0.0, 34.0))).clicked() {
