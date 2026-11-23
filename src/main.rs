@@ -697,7 +697,7 @@ fn run_headless(cfg: NetConfig, channel: &str, bot_room: Option<String>) -> anyh
             }
             continue;
         }
-        let _ = handle.cmd_tx.send(Cmd::SendChat { channel: current.clone(), body: line.to_string() });
+        let _ = handle.cmd_tx.send(Cmd::SendChat { channel: current.clone(), body: line.replace("\\n", "\n") });
     }
 
     let _ = handle.cmd_tx.send(Cmd::Quit);

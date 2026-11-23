@@ -235,6 +235,11 @@ pub struct CyberApp {
     drug_ok: bool,
     self_notice: Option<cybercord_node::safety::Category>,
     safety_at: Instant,
+    /// asking for help: the editor, requests over the limits, revealed details
+    help_ed: Option<cybercord_node::help::HelpRequest>,
+    help_over: HashSet<String>,
+    help_seen: Vec<cybercord_node::help::Seen>,
+    help_details: HashSet<String>,
     /// friends whose encryption keys are known (DMs sealed end to end)
     e2e_peers: HashSet<String>,
     mail_kept: (usize, usize),
@@ -428,6 +433,10 @@ impl CyberApp {
             drug_ok: false,
             self_notice: None,
             safety_at: Instant::now(),
+            help_ed: None,
+            help_over: HashSet::new(),
+            help_seen: Vec::new(),
+            help_details: HashSet::new(),
             e2e_peers: HashSet::new(),
             mail_kept: (0, 0),
             pending_handle: None,
@@ -685,6 +694,12 @@ impl CyberApp {
                     self.progress.remove(&hash);
                 }
                 UiEvent::Status(s) => self.status = s,
+                UiEvent::Chat(ev) if ev.body.starts_with("[help:") => {
+                    let view = self.views.entry(ev.channel.clone()).or_default();
+                    view.add(ev);
+                    view.msgs.sort_by_key(|m| m.ts_ms);
+                    self.recompute_safety();
+                }
                 UiEvent::Chat(ev) => {
                     if ev.ts_ms + 15_000 > now_ms() && ev.ts_ms + 3_000 > self.started_ms && ev.from != self.self_id && ev.name != self.self_name && ev.edits.is_none() && !ev.deleted {
                         let mention = self.self_name.chars().count() >= 2 && ev.body.to_lowercase().contains(&self.self_name.to_lowercase());
@@ -1383,7 +1398,7 @@ impl eframe::App for CyberApp {
         self.drain_events();
         self.drain_papers();
         // friends and ages change: weigh reports again now and then
-        if !self.reports.is_empty() && self.safety_at.elapsed().as_secs() >= 15 {
+        if (!self.reports.is_empty() || !self.help_seen.is_empty()) && self.safety_at.elapsed().as_secs() >= 15 {
             self.safety_at = Instant::now();
             self.recompute_safety();
         }
@@ -1511,6 +1526,7 @@ impl eframe::App for CyberApp {
         self.report_window(ctx);
         self.drug_warn_window(ctx);
         self.self_notice_window(ctx);
+        self.help_editor(ctx);
         self.dev_window(ctx);
         self.pdf_overlay(ctx);
         self.draw_toast(ctx);
@@ -2215,7 +2231,7 @@ impl CyberApp {
                     }
                     if let Some((score, cat)) = self.user_flags.get(&m.from) {
                         if *score >= cybercord_node::safety::WARN_USER {
-                            ui.label(RichText::new(format!("{}: {}", self.t("rep_flag"), self.td(cat.key()))).color(th().red).small()).on_hover_text(self.t("rep_flag_tip"));
+                            ui.label(RichText::new(self.t("rep_flag")).color(th().red).small()).on_hover_text(self.t("rep_flag_tip").replace("{c}", self.td(cat.key())));
                         }
                     }
                     if nresp.clicked() && !m.from.is_empty() {
@@ -2272,6 +2288,22 @@ impl CyberApp {
                         });
                     }
                 });
+                if let Some(req) = cybercord_node::help::HelpRequest::parse(&r.body) {
+                    ui.indent(&m.id, |ui| {
+                        if self.help_over.contains(&m.id) && !self.revealed.contains(&m.id) && !mine {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(self.t("help_spam")).color(th().ink2).italics());
+                                if ui.link(self.t("rep_show")).clicked() {
+                                    self.revealed.insert(m.id.clone());
+                                }
+                            });
+                        } else {
+                            self.help_card(ui, m, &req, ch, mine);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    continue;
+                }
                 let restricted = self.user_flags.get(&m.from).map(|(s, _)| *s >= cybercord_node::safety::RESTRICT_USER).unwrap_or(false);
                 let hidden_cat = self.hidden_msgs.get(&m.id).copied().or_else(|| restricted.then(|| self.user_flags.get(&m.from).map(|f| f.1)).flatten());
                 if let (Some(cat), false) = (hidden_cat, self.revealed.contains(&m.id) || mine) {
@@ -2376,6 +2408,10 @@ impl CyberApp {
                     }
                     if ui.button(self.t("block_chart")).clicked() {
                         self.block_ed = Some(BlockEd::new_chart());
+                        ui.close_menu();
+                    }
+                    if ui.button(self.t("help_btn")).clicked() {
+                        self.help_ed = Some(cybercord_node::help::HelpRequest { kind: "food".into(), ..Default::default() });
                         ui.close_menu();
                     }
                     ui.separator();
@@ -3276,6 +3312,27 @@ impl CyberApp {
                 }
             }
         }
+        // help requests over the limits: folded, and each one lowers that person's standing here
+        let mut seen = Vec::new();
+        for (ch, v) in &self.views {
+            for m in &v.msgs {
+                if m.body.starts_with("[help:") && !m.deleted {
+                    let author = if m.from.is_empty() { m.name.clone() } else { m.from.clone() };
+                    seen.push(cybercord_node::help::Seen { author, chat: format!("{}/{}", ch.guild, ch.channel), id: m.id.clone(), ts_ms: m.ts_ms });
+                }
+            }
+        }
+        let over = cybercord_node::help::over_limit(&seen);
+        let mut excess: HashMap<String, usize> = HashMap::new();
+        for s in seen.iter().filter(|s| over.contains(&s.id)) {
+            *excess.entry(s.author.clone()).or_default() += 1;
+        }
+        for (a, n) in excess {
+            let e = flags.entry(a).or_insert((0.0, Category::Scam));
+            e.0 += (0.35 * n as f64).min(1.4);
+        }
+        self.help_over = over;
+        self.help_seen = seen;
         self.hidden_msgs = hidden;
         self.user_flags = flags;
         let _ = self.handle.cmd_tx.send(Cmd::SetRestricted(restrict));
@@ -3393,7 +3450,16 @@ impl CyberApp {
             } else if ui.link(self.t("drug_help_link")).clicked() {
                 open_path(std::path::Path::new("https://findahelpline.com"));
             }
+            if cat != cybercord_node::safety::Category::Child {
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(RichText::new(self.t("help_no_shame")).color(c.ink)).wrap());
+                if ui.add(egui::Button::new(RichText::new(self.t("help_btn")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                    self.help_ed = Some(cybercord_node::help::HelpRequest { kind: "work".into(), wants: vec!["work".into(), "teach".into()], ..Default::default() });
+                    close = true;
+                }
+            }
             ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(self.t("notice_status")).color(c.ink2).small()).wrap());
             ui.add(egui::Label::new(RichText::new(self.t("notice_mistake")).color(c.ink2).small()).wrap());
             ui.add_space(8.0);
             if ui.button(self.t("notice_ok")).clicked() {
@@ -3404,6 +3470,133 @@ impl CyberApp {
             self.self_notice = None;
             self.settings.safety_notice_at = now_ms();
             store::save_settings(&self.settings);
+        }
+    }
+
+    // ---- asking for help ----
+
+    fn help_card(&mut self, ui: &mut egui::Ui, m: &ChatEvent, req: &cybercord_node::help::HelpRequest, ch: &ChannelId, mine: bool) {
+        let c = th();
+        let author = if m.from.is_empty() { m.name.clone() } else { m.from.clone() };
+        let chat = format!("{}/{}", ch.guild, ch.channel);
+        let nth = self.help_seen.iter().filter(|s| s.author == author && s.chat == chat && s.ts_ms <= m.ts_ms && !self.help_over.contains(&s.id)).count();
+        let flagged = self.user_flags.get(&m.from).map(|(s, _)| *s >= cybercord_node::safety::WARN_USER).unwrap_or(false);
+        egui::Frame::none().fill(c.green.gamma_multiply(0.10)).stroke(Stroke::new(1.0, c.green.gamma_multiply(0.5))).rounding(Rounding::same(10.0)).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+            ui.set_width(ui.available_width().min(620.0));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{} · {}", self.t("help_card_title"), self.td(&format!("help_kind_{}", req.kind)))).color(c.ink).b());
+                ui.label(RichText::new(self.t("help_n").replace("{i}", &nth.max(1).to_string())).color(c.ink2).small());
+            });
+            ui.add(egui::Label::new(RichText::new(&req.text).color(c.ink)).wrap());
+            if !req.amount.is_empty() {
+                ui.label(RichText::new(format!("{}: {}", self.t("help_amount"), req.amount)).color(c.ink2));
+            }
+            if flagged && !mine {
+                ui.add_space(4.0);
+                egui::Frame::none().fill(c.accent.gamma_multiply(0.10)).rounding(Rounding::same(8.0)).inner_margin(egui::Margin::same(8.0)).show(ui, |ui| {
+                    ui.add(egui::Label::new(RichText::new(self.t("help_way_out")).color(c.ink)).wrap());
+                });
+            }
+            if mine {
+                return;
+            }
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                let mut wants: Vec<String> = req.wants.clone();
+                if !wants.iter().any(|w| w == "talk") {
+                    wants.push("talk".into());
+                }
+                for w in wants {
+                    if ui.button(self.td(&format!("help_want_{w}"))).clicked() && !m.from.is_empty() {
+                        let offer = self.td(&format!("help_offer_{w}")).to_string();
+                        self.befriend(&m.from.clone(), &m.name.clone(), true);
+                        self.input = offer;
+                        self.focus_input = 3;
+                    }
+                }
+                if !req.details.is_empty() && !self.help_details.contains(&m.id) && ui.button(self.t("help_show_details")).clicked() {
+                    self.help_details.insert(m.id.clone());
+                }
+            });
+            if self.help_details.contains(&m.id) {
+                ui.add_space(4.0);
+                ui.label(RichText::new(&req.details).color(c.ink).monospace());
+                ui.add(egui::Label::new(RichText::new(self.t("help_details_caution")).color(c.ink2).small()).wrap());
+            }
+        });
+    }
+
+    fn help_editor(&mut self, ctx: &egui::Context) {
+        use cybercord_node::help::{allowance, KINDS, WANTS};
+        let Some(mut req) = self.help_ed.clone() else { return };
+        let c = th();
+        let ch = self.active_channel();
+        let chat = format!("{}/{}", ch.guild, ch.channel);
+        let (left, wait) = allowance(&self.help_seen, &self.self_id, &chat);
+        let mut open = true;
+        let mut send = false;
+        egui::Window::new(self.t("help_title")).open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(ctx, |ui| {
+            ui.set_width(540.0);
+            ui.add(egui::Label::new(RichText::new(self.t("help_honest")).color(c.ink2)).wrap());
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                for k in KINDS {
+                    ui.selectable_value(&mut req.kind, k.to_string(), self.td(&format!("help_kind_{k}")));
+                }
+            });
+            ui.add_space(4.0);
+            let hint = self.t("help_text_hint");
+            ui.add(egui::TextEdit::multiline(&mut req.text).hint_text(hint).desired_rows(4).desired_width(f32::INFINITY));
+            if !req.complete() {
+                ui.label(RichText::new(self.t("help_short")).color(c.ink2).small());
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new(self.t("help_wants")).color(c.ink2));
+            ui.horizontal_wrapped(|ui| {
+                for w in WANTS {
+                    let mut on = req.wants.iter().any(|x| x == w);
+                    if ui.checkbox(&mut on, self.td(&format!("help_want_{w}"))).changed() {
+                        if on {
+                            req.wants.push(w.to_string());
+                        } else {
+                            req.wants.retain(|x| x != w);
+                        }
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(self.t("help_amount"));
+                ui.add(egui::TextEdit::singleline(&mut req.amount).desired_width(160.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label(self.t("help_details"));
+                ui.add(egui::TextEdit::singleline(&mut req.details).desired_width(320.0));
+            });
+            ui.add_space(6.0);
+            let status = if wait > 0 {
+                self.t("help_wait").replace("{h}", &(wait / 3_600_000 + 1).to_string())
+            } else {
+                self.t("help_left").replace("{n}", &left.to_string())
+            };
+            ui.label(RichText::new(status).color(if left == 0 || wait > 0 { c.red } else { c.ink2 }).small());
+            ui.add_space(6.0);
+            let can = req.complete() && left > 0 && wait == 0;
+            if ui.add_enabled(can, egui::Button::new(RichText::new(self.t("help_send")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                send = true;
+            }
+        });
+        if send {
+            let draft = std::mem::take(&mut self.input);
+            self.input = req.to_text();
+            self.help_ed = None;
+            self.send_current();
+            if self.input.is_empty() {
+                self.input = draft;
+            }
+        } else if !open {
+            self.help_ed = None;
+        } else {
+            self.help_ed = Some(req);
         }
     }
 

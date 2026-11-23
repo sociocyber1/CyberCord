@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.23</h1>
+<h1 align="center">CyberCord 0.24</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -126,6 +126,34 @@ BitTorrent): **где угодно в интернете, без сервера 
 Пока друзей нет, «+» мягко пульсирует, чтобы его было сразу видно.
 
 ![Добавить друга](docs/img/screen-add-friend.png)
+
+## Что нового в 0.24 — просьба о помощи
+
+Честность и помощь дороже, и в просьбе нет ничего зазорного.
+
+- **«＋» → «Попросить помощи»:** на что нужна помощь (еда, жильё,
+  здоровье, семья, долги, учёба, найти работу, другое), честное описание
+  (не меньше 30 знаков), что поможет кроме денег (работа, обучение, курс,
+  еда, вещи, поддержка), сумма и реквизиты — по желанию.
+- **Карточка просьбы** в чате с кнопками «Предложить работу», «Научить
+  чему-то», «Подарить курс», «Помочь едой», «Отдать вещи», «Поддержать
+  словом» — открывают личку с готовым началом сообщения; реквизиты — по
+  кнопке, с подсказкой помогать тем, кому доверяете.
+- **Если человек, у которого «что-то пошло не так», просит помощи,**
+  остальные видят: он пытается выйти; помогите ему не вернуться —
+  работой, обучением, курсом, едой или словом. Цена выбора: он изменится —
+  или останется таким.
+- **Тихий статус вместо приговора:** рядом с именем — «что-то пошло не
+  так» (детект аберрантного поведения по жалобам тех, кому вы доверяете);
+  самому человеку CyberCord предлагает открыто попросить помощи.
+- **Чтобы это не стало фермой:** не больше 1 просьбы в день во всех чатах
+  и 5 в одном чате за 90 дней; сверх — сворачивается как спам и снижает
+  репутацию у каждого, кто это видит. Просьба всегда от своего имени и
+  ника, с историей; на обман можно пожаловаться («Мошенничество»).
+
+![Просьба о помощи в чате](docs/img/screen-help-request.png)
+
+![Редактор просьбы](docs/img/screen-help-editor.png)
 
 ## Что нового в 0.23 — безопасность без центрального модератора
 
@@ -647,12 +675,12 @@ CyberCord не должен становиться инструментом дл
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.23.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.24.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.23.0-linux-x86_64.tar.gz
-cd cybercord-0.23.0-linux-x86_64
+tar xf cybercord-0.24.0-linux-x86_64.tar.gz
+cd cybercord-0.24.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -858,6 +886,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.24:** asking for help — a request card (what it is for, ways to help besides money, optional details) with buttons that open a DM with a ready offer; a gentle "something went wrong" status instead of a verdict; a "trying to get out" note when such a person asks; limits against farming (1 per day, 5 per chat in 90 days, extra ones folded as spam and lower standing).
 
 **0.23:** safety without a central moderator — a local hint before sending something that looks like a drug sale (with consequences and help), signed reports with proof of work, weighed by each node by its own trust (new and unknown identities weigh nothing, decay over time, no global ban), hidden messages with "show anyway", and a calm help notice for people reported by several established users.
 
