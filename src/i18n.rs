@@ -64,7 +64,10 @@ fn table() -> &'static HashMap<&'static str, [&'static str; 8]> {
             let cols: Vec<&'static str> = line.split('\t').collect();
             if cols.len() == 9 {
                 let mut row = [""; 8];
-                row.copy_from_slice(&cols[1..9]);
+                for (i, c) in cols[1..9].iter().enumerate() {
+                    // "\n" in the table is a line break (made once, kept for the whole run)
+                    row[i] = if c.contains("\\n") { Box::leak(c.replace("\\n", "\n").into_boxed_str()) } else { c };
+                }
                 m.insert(cols[0], row);
             }
         }

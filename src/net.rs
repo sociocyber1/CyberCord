@@ -54,6 +54,11 @@ pub enum Cmd {
     SendChat { channel: ChannelId, body: String },
     RequestSync { channel: ChannelId, since_ms: u64 },
     JoinVoice { channel: ChannelId },
+    /// Make (proof of work, sign) and send a report.
+    MakeReport { target: String, msg: Option<String>, channel: Option<ChannelId>, category: crate::safety::Category },
+    /// Users this node restricts (by its own weighing of reports): it keeps no
+    /// mail for them and does not resend their messages in history sync.
+    SetRestricted(HashSet<String>),
     /// Keep (or stop keeping) offline mail for others.
     SetKeeper(bool),
     /// Send a call signal to a friend (DM topic).
@@ -140,6 +145,10 @@ pub enum UiEvent {
     VoiceStats { sent: u32, recv: u32, buffer_ms: u32 },
     /// This friend's encryption keys are known: direct messages are sealed end to end.
     E2e { peer: String },
+    /// A verified report (also all stored ones at start).
+    Report(crate::safety::Report),
+    /// When this node first noticed each user (for weighing reports).
+    FirstSeen(HashMap<String, u64>),
     /// Offline mail I keep for others: letters, for how many people.
     Mail { kept: usize, users: usize },
     /// A call signal from a friend.
@@ -396,6 +405,8 @@ enum Bg {
     Shared { channel: ChannelId, body: String, rec: crate::transfer::SharedRec, manifest: crate::transfer::Manifest },
     ShareFailed(String),
     Verified(String, bool),
+    /// A report finished its proof of work.
+    Report(crate::safety::Report),
 }
 
 fn spawn_verify(tx: tokio::sync::mpsc::UnboundedSender<Bg>, hash: String, path: PathBuf) {
@@ -559,6 +570,16 @@ async fn run(
     let mut mail_sent: HashMap<String, Instant> = HashMap::new();
     let mut mailbox_queries: HashSet<kad::QueryId> = HashSet::new();
     let mut mail_looked: Option<Instant> = None;
+    // reports and when I first noticed each user
+    let mut reports = crate::safety::Reports::load();
+    for r in &reports.list {
+        emit(&event_tx, UiEvent::Report(r.clone()));
+    }
+    let first_seen_path = store::data_dir().join("first_seen.json");
+    let mut first_seen: HashMap<String, u64> = std::fs::read_to_string(&first_seen_path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut first_seen_dirty = false;
+    emit(&event_tx, UiEvent::FirstSeen(first_seen.clone()));
+    let mut restricted: HashSet<String> = HashSet::new();
     // who keeps mail right now: peer → (score, heard at)
     let mut keepers: HashMap<String, (f64, u64)> = HashMap::new();
 
@@ -821,6 +842,14 @@ async fn run(
                         let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone(), keeper: keeper_on && voice_room.is_none() };
                         let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
                     }
+                    Cmd::MakeReport { target, msg, channel, category } => {
+                        let (kp, tx) = (keypair.clone(), bg_tx.clone());
+                        std::thread::spawn(move || {
+                            let r = crate::safety::Report::create(&kp, &target, msg, channel, category);
+                            let _ = tx.send(Bg::Report(r));
+                        });
+                    }
+                    Cmd::SetRestricted(set) => restricted = set,
                     Cmd::SetKeeper(on) => {
                         keeper_on = on;
                     }
@@ -1076,6 +1105,13 @@ async fn run(
 
             _ = ticker.tick() => {
                 tick_n += 1;
+                if first_seen_dirty && tick_n % 12 == 0 {
+                    first_seen_dirty = false;
+                    if let Ok(t) = serde_json::to_string(&first_seen) {
+                        let _ = std::fs::write(&first_seen_path, t);
+                    }
+                    emit(&event_tx, UiEvent::FirstSeen(first_seen.clone()));
+                }
                 if (profile_due || tick_n % 24 == 0) && !connected_peers.is_empty() {
                     let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Keys(my_keys.clone()).encode());
                 }
@@ -1278,6 +1314,13 @@ async fn run(
                         let _ = publish_chat!(topic_for(&local_id, &channel), &ev);
                     }
                     Bg::ShareFailed(e) => emit(&event_tx, UiEvent::Status(format!("cannot share the file: {e}"))),
+                    Bg::Report(r) => {
+                        if reports.add(r.clone()) {
+                            reports.save();
+                            emit(&event_tx, UiEvent::Report(r.clone()));
+                        }
+                        let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Report(r).encode());
+                    }
                     Bg::Verified(hash, ok) => {
                         for a in transfers.on_verified(&hash, ok) {
                             if let crate::transfer::Action::Provide(h) = a {
@@ -1709,7 +1752,8 @@ async fn run(
                             }
                             Wire::MailPut { item } if th == my_mail_hash => {
                                 let by = message_author(&message).unwrap_or_default();
-                                if keeper_on && voice_room.is_none() && item.to != local_id && mailbox.put(item.clone(), &by, now_ms()) {
+                                let blocked = restricted.contains(&item.to) || restricted.contains(&item.from) || restricted.contains(&by);
+                                if keeper_on && !blocked && voice_room.is_none() && item.to != local_id && mailbox.put(item.clone(), &by, now_ms()) {
                                     let _ = swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&crate::mailbox::key(&item.to)));
                                     mailbox.save();
                                     emit(&event_tx, UiEvent::Mail { kept: mailbox.total(), users: mailbox.items.len() });
@@ -1750,7 +1794,7 @@ async fn run(
                             Wire::SyncReq { since_ms, .. } => {
                                 if let Some(local) = topic_of_hash.get(&th).cloned() {
                                     let nonce: u64 = rand::random();
-                                    for ev in store::load_since(&local, since_ms, SYNC_REPLY_CAP) {
+                                    for ev in store::load_since(&local, since_ms, SYNC_REPLY_CAP).into_iter().filter(|e| !restricted.contains(&e.from)) {
                                         let topic = IdentTopic::new(message.topic.as_str());
                                         let (bytes, _) = chat_payload(&ev, &local_id, &bundles, Some(nonce));
                                         let _ = swarm.behaviour_mut().gossipsub.publish(topic, bytes);
@@ -1765,7 +1809,18 @@ async fn run(
                                     emit(&event_tx, UiEvent::Profile(p));
                                 }
                             }
+                            Wire::Report(r) if th == control_hash => {
+                                if reports.add(r.clone()) {
+                                    reports.save();
+                                    emit(&event_tx, UiEvent::Report(r));
+                                }
+                            }
+                            Wire::Report(_) => {}
                             Wire::Score(rec) if th == control_hash => {
+                                if !first_seen.contains_key(&rec.peer) {
+                                    first_seen.insert(rec.peer.clone(), now_ms());
+                                    first_seen_dirty = true;
+                                }
                                 if rec.keeper && rec.peer != local_id {
                                     keepers.insert(rec.peer.clone(), (rec.score, now_ms()));
                                 } else {

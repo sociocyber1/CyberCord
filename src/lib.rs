@@ -195,3 +195,4 @@ pub mod profile;
 pub mod city;
 pub mod e2e;
 pub mod mailbox;
+pub mod safety;

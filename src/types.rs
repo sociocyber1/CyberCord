@@ -456,6 +456,8 @@ pub enum Wire {
     MailDrop { items: Vec<crate::e2e::Sealed> },
     /// "Received, you may delete them" (the keeper's mail topic).
     MailAck { ids: Vec<String> },
+    /// A signed report with proof of work (control topic); every node weighs it itself.
+    Report(crate::safety::Report),
     /// A call between two friends (DM topic): ring, answer, hang up.
     /// `id` names the call; `round` keeps repeated rings from being dropped
     /// as duplicates by gossip.

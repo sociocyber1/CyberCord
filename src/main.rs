@@ -330,6 +330,8 @@ fn run_headless(cfg: NetConfig, channel: &str, bot_room: Option<String>) -> anyh
                     }
                     talk_seen.insert(name, now);
                 }
+                UiEvent::Report(r) => println!("· report {:?} about {} by {}", r.category, &r.target[..r.target.len().min(12)], &r.reporter[..r.reporter.len().min(12)]),
+                UiEvent::FirstSeen(_) => {}
                 UiEvent::E2e { peer } => println!("· end-to-end keys known: {}", &peer[..peer.len().min(16)]),
                 UiEvent::Mail { kept, users } => println!("· keeping {kept} sealed letters for {users} users"),
                 UiEvent::Call { peer, name, id, kind } => {

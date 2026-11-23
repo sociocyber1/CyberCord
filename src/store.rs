@@ -351,6 +351,12 @@ pub struct Settings {
     /// Keep sealed offline mail for other users (off on a weak connection).
     #[serde(default = "yes")]
     pub relay_mail: bool,
+    /// Warn before sending something that looks like a drug sale offer.
+    #[serde(default = "yes")]
+    pub safety_hints: bool,
+    /// When the "reports about you" help was last shown (ms).
+    #[serde(default)]
+    pub safety_notice_at: u64,
 }
 
 fn hundred() -> f32 {

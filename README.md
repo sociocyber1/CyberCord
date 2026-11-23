@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.22</h1>
+<h1 align="center">CyberCord 0.23</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -126,6 +126,43 @@ BitTorrent): **где угодно в интернете, без сервера 
 Пока друзей нет, «+» мягко пульсирует, чтобы его было сразу видно.
 
 ![Добавить друга](docs/img/screen-add-friend.png)
+
+## Что нового в 0.23 — безопасность без центрального модератора
+
+CyberCord не должен становиться инструментом для торговли наркотиками или
+вреда детям. При этом в нём нет центра, который мог бы «банить», — и его
+не должно быть, иначе через жалобы можно было бы выключить всю сеть.
+
+- **Подсказка отправителю.** Если сообщение похоже на предложение продать
+  или купить наркотики, перед отправкой CyberCord показывает последствия:
+  закон (в России сбыт через интернет — отдельный, более строгий пункт:
+  п. «б» ч. 2 ст. 228.1 УК РФ, годы лишения свободы), сломанные жизни
+  покупателей, жалобы в сети — и ссылку на анонимную помощь для тех, кого
+  держит зависимость или долги. Решает человек; ничего никуда не уходит.
+  Получатель видит под таким сообщением предупреждение и кнопку жалобы.
+- **Жалобы:** наркоторговля, вред детям, угрозы, мошенничество, другое.
+  Для «вред детям» — подсказка: если ребёнок в опасности — полиция (112),
+  о материалах насилия — горячая линия своей страны (сеть INHOPE).
+- **Защита от атаки жалобами:**
+  - жалоба подписана и стоит около секунды вычислений, не больше 10 в
+    день от человека;
+  - каждый узел взвешивает жалобы **сам**: ваша и друзей — больше всего,
+    пользователи, которых вы видите неделю, — немного, **новые и
+    незнакомые аккаунты — нисколько** (армия фальшивых аккаунтов ничего
+    не скроет); кто жалуется на многих ваших друзей — игнорируется;
+  - вес жалобы уменьшается вдвое каждые 30 дней;
+  - скрывается **сообщение**, а не человек; «показать всё равно» — всегда;
+  - при очень высоком доверенном весе узел перестаёт хранить письма для
+    этого пользователя и пересылать его сообщения в истории;
+  - **общего бана нет**: поиск, ключи, хаб, ретрансляция и письма от жалоб
+    не зависят, поэтому сеть нельзя «выключить» жалобами.
+- **Тому, на кого пожаловались несколько давних пользователей,** CyberCord
+  спокойно, без ярлыков показывает, где получить анонимную помощь (для
+  мыслей о детях — Stop It Now), и что делать, если это ошибка.
+
+![Подсказка перед отправкой](docs/img/screen-drug-warning.png)
+
+![Жалоба](docs/img/screen-report.png)
 
 ## Что нового в 0.22 — шифрование и письма, пока друг не в сети
 
@@ -610,12 +647,12 @@ BitTorrent): **где угодно в интернете, без сервера 
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.22.1-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.23.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.22.1-linux-x86_64.tar.gz
-cd cybercord-0.22.1-linux-x86_64
+tar xf cybercord-0.23.0-linux-x86_64.tar.gz
+cd cybercord-0.23.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -821,6 +858,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.23:** safety without a central moderator — a local hint before sending something that looks like a drug sale (with consequences and help), signed reports with proof of work, weighed by each node by its own trust (new and unknown identities weigh nothing, decay over time, no global ban), hidden messages with "show anyway", and a calm help notice for people reported by several established users.
 
 **0.22:** end-to-end encrypted direct messages — hybrid X25519 + ML-KEM-768 (post-quantum, NIST FIPS 203) with XChaCha20-Poly1305 and size padding; offline delivery through "keepers" (other users’ nodes that are online for long, not in a call, and have it enabled) that hold sealed letters, announce them in the DHT and delete them after the recipient confirms.
 

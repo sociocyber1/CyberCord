@@ -224,6 +224,17 @@ pub struct CyberApp {
     call_tone_at: Option<Instant>,
     show_invite: bool,
     show_add_friend: bool,
+    // safety: reports, my weighing of them, what to hide
+    reports: Vec<cybercord_node::safety::Report>,
+    first_seen: HashMap<String, u64>,
+    hidden_msgs: HashMap<String, cybercord_node::safety::Category>,
+    user_flags: HashMap<String, (f64, cybercord_node::safety::Category)>,
+    revealed: HashSet<String>,
+    report_draft: Option<(String, Option<String>, Option<ChannelId>, Option<cybercord_node::safety::Category>)>,
+    drug_warn: Option<String>,
+    drug_ok: bool,
+    self_notice: Option<cybercord_node::safety::Category>,
+    safety_at: Instant,
     /// friends whose encryption keys are known (DMs sealed end to end)
     e2e_peers: HashSet<String>,
     mail_kept: (usize, usize),
@@ -407,6 +418,16 @@ impl CyberApp {
             call_tone_at: None,
             show_invite: false,
             show_add_friend: false,
+            reports: Vec::new(),
+            first_seen: HashMap::new(),
+            hidden_msgs: HashMap::new(),
+            user_flags: HashMap::new(),
+            revealed: HashSet::new(),
+            report_draft: None,
+            drug_warn: None,
+            drug_ok: false,
+            self_notice: None,
+            safety_at: Instant::now(),
             e2e_peers: HashSet::new(),
             mail_kept: (0, 0),
             pending_handle: None,
@@ -643,6 +664,7 @@ impl CyberApp {
                 UiEvent::Ready { peer_id, name } => {
                     self.self_id = peer_id;
                     self.self_name = name;
+                    self.recompute_safety();
                 }
                 UiEvent::Listening(a) => {
                     if !self.listen_addrs.contains(&a) {
@@ -753,6 +775,16 @@ impl CyberApp {
                     self.talkers.insert(name, now_ms());
                 }
                 UiEvent::Call { peer, name, id, kind } => self.on_call(peer, name, id, kind),
+                UiEvent::Report(r) => {
+                    if !self.reports.contains(&r) {
+                        self.reports.push(r);
+                        self.recompute_safety();
+                    }
+                }
+                UiEvent::FirstSeen(m) => {
+                    self.first_seen = m;
+                    self.recompute_safety();
+                }
                 UiEvent::E2e { peer } => {
                     self.e2e_peers.insert(peer);
                 }
@@ -803,6 +835,11 @@ impl CyberApp {
         if body.is_empty() {
             return;
         }
+        if self.settings.safety_hints && !self.drug_ok && cybercord_node::safety::looks_like_drug_sale(&body) {
+            self.drug_warn = Some(body);
+            return;
+        }
+        self.drug_ok = false;
         self.input.clear();
         self.words_check(&body);
         let ch = self.active_channel();
@@ -1345,6 +1382,11 @@ impl eframe::App for CyberApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.drain_papers();
+        // friends and ages change: weigh reports again now and then
+        if !self.reports.is_empty() && self.safety_at.elapsed().as_secs() >= 15 {
+            self.safety_at = Instant::now();
+            self.recompute_safety();
+        }
         if !self.brand_played && !self.hidden && self.started.elapsed().as_millis() > 300 {
             self.brand_played = true;
             self.play_sfx(crate::sounds::Sfx::Brand);
@@ -1466,6 +1508,9 @@ impl eframe::App for CyberApp {
         self.call_window(ctx);
         self.invite_window(ctx);
         self.add_friend_window(ctx);
+        self.report_window(ctx);
+        self.drug_warn_window(ctx);
+        self.self_notice_window(ctx);
         self.dev_window(ctx);
         self.pdf_overlay(ctx);
         self.draw_toast(ctx);
@@ -2168,6 +2213,11 @@ impl CyberApp {
                     if let Some(code) = self.user_code(&m.from) {
                         ui.label(RichText::new(format!("[{code}]")).color(th().ink2).size(10.5).monospace());
                     }
+                    if let Some((score, cat)) = self.user_flags.get(&m.from) {
+                        if *score >= cybercord_node::safety::WARN_USER {
+                            ui.label(RichText::new(format!("{}: {}", self.t("rep_flag"), self.td(cat.key()))).color(th().red).small()).on_hover_text(self.t("rep_flag_tip"));
+                        }
+                    }
                     if nresp.clicked() && !m.from.is_empty() {
                         self.profile_view = Some(m.from.clone());
                     }
@@ -2207,17 +2257,44 @@ impl CyberApp {
                                 self.analyze = Some((m.name.clone(), r.body.clone(), r.ts_ms));
                             }
                         });
-                    } else if self.hover_msg.as_deref() == Some(m.id.as_str()) && !r.body.trim().is_empty() {
+                    } else if self.hover_msg.as_deref() == Some(m.id.as_str()) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(6.0);
-                            let lv = self.icons.get(ui.ctx(), "levels", SYM_LEVELS);
-                            if icon_button_k(ui, lv, th().ink2, th().window, 22.0, 0.72).on_hover_text(self.t("sem_levels")).clicked() {
-                                self.analyze = Some((m.name.clone(), r.body.clone(), r.ts_ms));
+                            if !mine && !m.from.is_empty() && ui.small_button(self.t("rep_btn")).on_hover_text(self.t("rep_tip")).clicked() {
+                                self.report_draft = Some((m.from.clone(), Some(m.id.clone()), Some(ch.clone()), None));
+                            }
+                            if !r.body.trim().is_empty() {
+                                let lv = self.icons.get(ui.ctx(), "levels", SYM_LEVELS);
+                                if icon_button_k(ui, lv, th().ink2, th().window, 22.0, 0.72).on_hover_text(self.t("sem_levels")).clicked() {
+                                    self.analyze = Some((m.name.clone(), r.body.clone(), r.ts_ms));
+                                }
                             }
                         });
                     }
                 });
+                let restricted = self.user_flags.get(&m.from).map(|(s, _)| *s >= cybercord_node::safety::RESTRICT_USER).unwrap_or(false);
+                let hidden_cat = self.hidden_msgs.get(&m.id).copied().or_else(|| restricted.then(|| self.user_flags.get(&m.from).map(|f| f.1)).flatten());
+                if let (Some(cat), false) = (hidden_cat, self.revealed.contains(&m.id) || mine) {
+                    ui.indent(&m.id, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{} · {}", self.t("rep_hidden"), self.td(cat.key()))).color(th().ink2).italics());
+                            if ui.link(self.t("rep_show")).clicked() {
+                                self.revealed.insert(m.id.clone());
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                    continue;
+                }
                 ui.indent(&m.id, |ui| {
+                    if !mine && cybercord_node::safety::looks_like_drug_sale(&r.body) {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(self.t("drug_banner")).color(th().red).small());
+                            if !m.from.is_empty() && ui.link(RichText::new(self.t("rep_btn")).small()).clicked() {
+                                self.report_draft = Some((m.from.clone(), Some(m.id.clone()), Some(ch.clone()), Some(cybercord_node::safety::Category::Drugs)));
+                            }
+                        });
+                    }
                     if !r.body.is_empty() {
                         if let Some(nb) = self.body_view(ui, &m.id, &r.body, editable) {
                             toggled = Some((m.id.clone(), nb, r.rev + 1));
@@ -3165,6 +3242,171 @@ impl CyberApp {
         self.add_msg.clear();
     }
 
+    // ---- safety ----
+
+    /// Weigh all reports again (my own trust in each reporter) and tell the
+    /// node whom it should restrict.
+    fn recompute_safety(&mut self) {
+        use cybercord_node::safety::*;
+        let friends: HashSet<String> = self.friends.keys().cloned().collect();
+        let is_friend = |p: &str| friends.contains(p);
+        let fs = self.first_seen.clone();
+        let first_seen = |p: &str| fs.get(p).copied();
+        let me = self.self_id.clone();
+        let t = Trust { me: &me, is_friend: &is_friend, first_seen: &first_seen };
+        let mut hidden = HashMap::new();
+        let msgs: HashSet<String> = self.reports.iter().filter_map(|r| r.msg.clone()).collect();
+        for m in msgs {
+            if let (s, Some(c)) = t.message_score(&m, &self.reports) {
+                if s >= HIDE_MSG {
+                    hidden.insert(m, c);
+                }
+            }
+        }
+        let mut flags = HashMap::new();
+        let mut restrict = HashSet::new();
+        let users: HashSet<String> = self.reports.iter().map(|r| r.target.clone()).collect();
+        for u in users {
+            if let (s, Some(c)) = t.user_score(&u, &self.reports) {
+                if s >= RESTRICT_USER {
+                    restrict.insert(u.clone());
+                }
+                if s > 0.0 {
+                    flags.insert(u, (s, c));
+                }
+            }
+        }
+        self.hidden_msgs = hidden;
+        self.user_flags = flags;
+        let _ = self.handle.cmd_tx.send(Cmd::SetRestricted(restrict));
+        // reports about me from at least two established users: offer help, at most weekly
+        let about_me: HashMap<&str, Category> = self.reports.iter().filter(|r| r.target == self.self_id && fs.get(&r.reporter).map(|t| now_ms().saturating_sub(*t) >= MIN_AGE_MS).unwrap_or(false)).map(|r| (r.reporter.as_str(), r.category)).collect();
+        if about_me.len() >= 2 && now_ms().saturating_sub(self.settings.safety_notice_at) > 7 * 24 * 3600 * 1000 {
+            let child = about_me.values().any(|c| *c == Category::Child);
+            let drugs = about_me.values().filter(|c| **c == Category::Drugs).count() >= 2;
+            if child || drugs {
+                self.self_notice = Some(if child { Category::Child } else { Category::Drugs });
+            }
+        }
+    }
+
+    fn report_window(&mut self, ctx: &egui::Context) {
+        use cybercord_node::safety::{Category, CATEGORIES};
+        let Some((target, msg, ch, cat)) = self.report_draft.clone() else { return };
+        let c = th();
+        let who = self.peers.get(&target).and_then(|p| p.name.clone()).unwrap_or_else(|| self.friend_name(&target));
+        let mut open = true;
+        let mut chosen = cat;
+        let mut send = false;
+        egui::Window::new(self.t("rep_title")).open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.label(RichText::new(if msg.is_some() { self.t("rep_about_msg").replace("{name}", &who) } else { self.t("rep_about_user").replace("{name}", &who) }).color(c.ink).b());
+            ui.add_space(6.0);
+            for k in CATEGORIES {
+                ui.radio_value(&mut chosen, Some(k), self.td(k.key()));
+            }
+            if chosen == Some(Category::Child) {
+                ui.add_space(6.0);
+                egui::Frame::none().fill(c.red.gamma_multiply(0.10)).rounding(Rounding::same(8.0)).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+                    ui.add(egui::Label::new(RichText::new(self.t("rep_child_info")).color(c.ink)).wrap());
+                    if ui.link("inhope.org — найти горячую линию своей страны").clicked() {
+                        open_path(std::path::Path::new("https://www.inhope.org/EN"));
+                    }
+                });
+            }
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(self.t("rep_how")).color(c.ink2).small()).wrap());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(chosen.is_some(), egui::Button::new(RichText::new(self.t("rep_send")).color(Color32::WHITE).b()).fill(c.red).rounding(Rounding::same(8.0))).clicked() {
+                    send = true;
+                }
+                if ui.button(self.t("call_cancel")).clicked() {
+                    self.report_draft = None;
+                }
+            });
+        });
+        if let Some(d) = self.report_draft.as_mut() {
+            d.3 = chosen;
+        }
+        if send {
+            if let Some(category) = chosen {
+                let _ = self.handle.cmd_tx.send(Cmd::MakeReport { target, msg, channel: ch, category });
+                let m = self.t("rep_sent").to_string();
+                self.toast(m);
+            }
+            self.report_draft = None;
+        }
+        if !open {
+            self.report_draft = None;
+        }
+    }
+
+    fn drug_warn_window(&mut self, ctx: &egui::Context) {
+        let Some(body) = self.drug_warn.clone() else { return };
+        let c = th();
+        let mut act = 0;
+        egui::Window::new(self.t("drug_title")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(ctx, |ui| {
+            ui.set_width(500.0);
+            ui.add(egui::Label::new(RichText::new(self.t("drug_body")).color(c.ink)).wrap());
+            ui.add_space(6.0);
+            if ui.link(self.t("drug_help_link")).clicked() {
+                open_path(std::path::Path::new("https://findahelpline.com"));
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(RichText::new(self.t("drug_dont")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                    act = 1;
+                }
+                if ui.button(self.t("drug_send_anyway")).clicked() {
+                    act = 2;
+                }
+            });
+        });
+        match act {
+            1 => self.drug_warn = None,
+            2 => {
+                self.drug_warn = None;
+                self.drug_ok = true;
+                self.input = body;
+                self.send_current();
+            }
+            _ => {}
+        }
+    }
+
+    /// Shown to someone reported by several established users: calm, no labels,
+    /// where to get help, and what to do if it is a mistake.
+    fn self_notice_window(&mut self, ctx: &egui::Context) {
+        let Some(cat) = self.self_notice else { return };
+        let c = th();
+        let mut close = false;
+        egui::Window::new(self.t("notice_title")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(ctx, |ui| {
+            ui.set_width(520.0);
+            let key = if cat == cybercord_node::safety::Category::Child { "notice_child" } else { "notice_drugs" };
+            ui.add(egui::Label::new(RichText::new(self.td(key)).color(c.ink)).wrap());
+            ui.add_space(6.0);
+            if cat == cybercord_node::safety::Category::Child {
+                if ui.link("Stop It Now — stopitnow.org").clicked() {
+                    open_path(std::path::Path::new("https://stopitnow.org/selfhelp"));
+                }
+            } else if ui.link(self.t("drug_help_link")).clicked() {
+                open_path(std::path::Path::new("https://findahelpline.com"));
+            }
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(self.t("notice_mistake")).color(c.ink2).small()).wrap());
+            ui.add_space(8.0);
+            if ui.button(self.t("notice_ok")).clicked() {
+                close = true;
+            }
+        });
+        if close {
+            self.self_notice = None;
+            self.settings.safety_notice_at = now_ms();
+            store::save_settings(&self.settings);
+        }
+    }
+
     // ---- inviting friends ----
 
     fn invite_card(&mut self, ui: &mut egui::Ui) {
@@ -3777,6 +4019,9 @@ impl CyberApp {
                     // name, version index and date — the person is indexed and dated too
                     let idx = p.as_ref().map(|p| format!("{}{}", self.t("version_n"), subscript(p.rev.max(1)))).unwrap_or_default();
                     ui.label(RichText::new(&name).color(c.ink).b().size(19.0));
+                    if peer != self.self_id && ui.small_button(self.t("rep_user")).clicked() {
+                        self.report_draft = Some((peer.clone(), None, None, None));
+                    }
                     let h = format!("@{}", cybercord_node::types::handle(&name, &peer));
                     if ui.add(egui::Label::new(RichText::new(&h).color(c.accent).monospace()).sense(egui::Sense::click())).on_hover_text(self.t("handle_click_copy")).clicked() {
                         ui.output_mut(|o| o.copied_text = h.clone());
@@ -5742,6 +5987,15 @@ impl CyberApp {
                             ui.add_space(6.0);
                             ui.add(egui::Label::new(RichText::new(self.t("keeper_note")).color(th().ink2)).wrap());
                             ui.colored_label(th().ink2, RichText::new(self.t("keeper_stat").replace("{n}", &self.mail_kept.0.to_string()).replace("{u}", &self.mail_kept.1.to_string())).small());
+                            ui.add_space(18.0);
+                            ui.label(RichText::new(self.t("safety_h")).color(th().ink).b());
+                            let label = self.t("safety_hints_opt");
+                            if ui.checkbox(&mut self.settings.safety_hints, label).changed() {
+                                store::save_settings(&self.settings);
+                            }
+                            ui.add(egui::Label::new(RichText::new(self.t("safety_note")).color(th().ink2)).wrap());
+                            let mine = self.reports.iter().filter(|r| r.reporter == self.self_id).count();
+                            ui.colored_label(th().ink2, RichText::new(self.t("safety_stat").replace("{n}", &self.reports.len().to_string()).replace("{m}", &mine.to_string())).small());
                             ui.add_space(18.0);
                             ui.label(RichText::new(self.t("e2e_h")).color(th().ink).b());
                             ui.add(egui::Label::new(RichText::new(self.t("e2e_note")).color(th().ink2)).wrap());
