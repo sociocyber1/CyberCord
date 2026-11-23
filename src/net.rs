@@ -36,6 +36,10 @@ const SYNC_REPLY_CAP: usize = 50;
 const DEFAULT_PORT: u16 = 47100;
 /// Keep about this many live connections; below it we dial more known nodes.
 const TARGET_CONNECTIONS: usize = 8;
+/// Trim extra connections down to this many (friends, hub, relays are kept anyway).
+const KEEP_CONNECTIONS: usize = 32;
+/// Heard from within this time = online (heartbeats every 10 s).
+const ONLINE_MS: u64 = 35_000;
 /// At most this many new dials per round (bounded probing).
 const DIALS_PER_ROUND: usize = 5;
 /// Use up to this many other nodes as relays when we are not reachable.
@@ -582,16 +586,22 @@ async fn run(
     let mut restricted: HashSet<String> = HashSet::new();
     // who keeps mail right now: peer → (score, heard at)
     let mut keepers: HashMap<String, (f64, u64)> = HashMap::new();
+    let mut conn_since: HashMap<PeerId, Instant> = HashMap::new();
+    let (mut dials_in, mut dials_out) = (0u32, 0u32);
+    let mut profile_sent: Option<Instant> = None;
+    let mut asked_profiles = false;
 
     // Listen: default port 47100, random fallback (e.g. second copy on one machine).
     if !no_listen {
         let tcp = if cfg.tcp_port == 0 { DEFAULT_PORT } else { cfg.tcp_port };
         let quic = if cfg.quic_port == 0 { DEFAULT_PORT } else { cfg.quic_port };
-        if swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{tcp}").parse()?).is_err() {
-            swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        // test switch: CYBERCORD_LISTEN_IP=127.0.0.N gives every simulated user its own address
+        let ip = std::env::var("CYBERCORD_LISTEN_IP").unwrap_or_else(|_| "0.0.0.0".into());
+        if swarm.listen_on(format!("/ip4/{ip}/tcp/{tcp}").parse()?).is_err() {
+            swarm.listen_on(format!("/ip4/{ip}/tcp/0").parse()?)?;
         }
-        if swarm.listen_on(format!("/ip4/0.0.0.0/udp/{quic}/quic-v1").parse()?).is_err() {
-            swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
+        if swarm.listen_on(format!("/ip4/{ip}/udp/{quic}/quic-v1").parse()?).is_err() {
+            swarm.listen_on(format!("/ip4/{ip}/udp/0/quic-v1").parse()?)?;
         }
     }
 
@@ -724,7 +734,7 @@ async fn run(
                 let friend_on = parse_peer(&ev.channel.channel).map(|p| connected_peers.contains(&p)).unwrap_or(false);
                 if !friend_on {
                     let now = now_ms();
-                    let mut ks: Vec<(&String, &(f64, u64))> = keepers.iter().filter(|(k, (_, t))| **k != ev.channel.channel && now.saturating_sub(*t) < 30_000 && parse_peer(k).map(|p| connected_peers.contains(&p)).unwrap_or(false)).collect();
+                    let mut ks: Vec<(&String, &(f64, u64))> = keepers.iter().filter(|(k, (_, t))| **k != ev.channel.channel && now.saturating_sub(*t) < ONLINE_MS + 10_000 && parse_peer(k).map(|p| connected_peers.contains(&p)).unwrap_or(false)).collect();
                     ks.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
                     for (k, _) in ks.into_iter().take(3) {
                         let _ = swarm.behaviour_mut().gossipsub.publish(IdentTopic::new(format!("cc/mail/{k}")), Wire::MailPut { item: s.clone() }.encode());
@@ -1112,7 +1122,7 @@ async fn run(
                     }
                     emit(&event_tx, UiEvent::FirstSeen(first_seen.clone()));
                 }
-                if (profile_due || tick_n % 24 == 0) && !connected_peers.is_empty() {
+                if (profile_due || tick_n % 120 == 0) && !connected_peers.is_empty() {
                     let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Keys(my_keys.clone()).encode());
                 }
                 // a keeper hands letters to recipients who are here now
@@ -1141,11 +1151,17 @@ async fn run(
                 v_sent = 0;
                 v_recv = 0;
                 // re-announce my profile now and then (and soon after new peers connect)
-                if (profile_due || tick_n % 24 == 0) && !connected_peers.is_empty() {
+                if (profile_due || tick_n % 120 == 0) && !connected_peers.is_empty() {
                     if let Some(p) = profiles.get(&local_id) {
                         let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Profile(p.clone()).encode());
+                        profile_sent = Some(Instant::now());
                     }
                     profile_due = false;
+                }
+                // a newcomer asks the others for their profiles (specialists, codes) — once
+                // gossip has someone on the control topic, else the request would be lost
+                if !asked_profiles && swarm.behaviour().gossipsub.all_peers().any(|(_, ts)| ts.contains(&&control_hash)) {
+                    asked_profiles = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::ProfileReq.encode()).is_ok();
                 }
                 // History sync: for every room the user opened, ask each newly seen
                 // member of that room once (covers any order of connect/subscribe/open).
@@ -1170,10 +1186,40 @@ async fn run(
                 scores.insert(local_id.clone(), (score, now_ms()));
                 last_score = score;
                 let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score, ts_ms: now_ms(), reachable: am_reachable, voice: public_room(&voice_room), listed, status: status.clone(), keeper: keeper_on && voice_room.is_none() };
-                let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
+                // presence goes to the whole network: every 10 s, not 5 (halves the traffic)
+                if tick_n % 2 == 0 {
+                    let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
+                }
                 recompute_hub(&scores, &mut last_hub, &event_tx);
 
-                if tick_n % 3 == 0 {
+                // Keep the number of connections modest: everyone connected to everyone does not
+                // scale (memory, CPU). Friends, the hub, relays and keepers of my mail stay.
+                if tick_n % 6 == 0 && connected_peers.len() > KEEP_CONNECTIONS + 8 {
+                    let friend_ids: HashSet<String> = friends.keys().cloned().collect();
+                    let mut drop: Vec<PeerId> = connected_peers
+                        .iter()
+                        .filter(|p| {
+                            let id = p.to_base58();
+                            // young links stay: a newcomer may have only this one
+                            conn_since.get(*p).map(|t| t.elapsed().as_secs() >= 120).unwrap_or(true) && !friend_ids.contains(&id) && !relays_ok.contains(*p) && last_hub.0.as_deref() != Some(id.as_str()) && last_hub.1.as_deref() != Some(id.as_str())
+                        })
+                        .copied()
+                        .collect();
+                    drop.sort_by_key(|p| blake3::hash(format!("{}{}", p, tick_n / 60).as_bytes()).as_bytes()[0]);
+                    let excess = connected_peers.len().saturating_sub(KEEP_CONNECTIONS);
+                    let mut n = 0;
+                    for p in drop.into_iter().take(excess) {
+                        if swarm.disconnect_peer_id(p).is_ok() {
+                            n += 1;
+                        }
+                    }
+                    if std::env::var("CYBERCORD_DEBUG_CONNS").is_ok() {
+                        emit(&event_tx, UiEvent::Status(format!("trim: {} connected, closed {n}, dialed in {dials_in} / out {dials_out} since last", connected_peers.len())));
+                        dials_in = 0;
+                        dials_out = 0;
+                    }
+                }
+                if tick_n % 12 == 0 {
                     // Peer exchange: tell neighbours about the nodes we know + ourselves.
                     let mut recs: Vec<PeerRec> = Vec::new();
                     let me: Vec<String> = local_addrs.iter()
@@ -1394,7 +1440,7 @@ async fn run(
 
             _ = nodes_tick.tick() => {
                 let now = now_ms();
-                let online = |p: &str| dir.get(p).map(|(_, t, _)| now.saturating_sub(*t) < 20_000).unwrap_or(false);
+                let online = |p: &str| dir.get(p).map(|(_, t, _)| now.saturating_sub(*t) < ONLINE_MS).unwrap_or(false);
                 let mut nodes: Vec<NodeInfo> = book
                     .entries
                     .iter()
@@ -1415,9 +1461,11 @@ async fn run(
                     })
                     .collect();
                 // users heard on the network but not (yet) in the address book
+                // (everyone heard in the last day: the map is a directory of people, not only of links)
+                let on_map: HashSet<String> = nodes.iter().map(|x| x.peer.clone()).collect();
                 for (p, (n, t, _)) in dir.iter() {
-                    if now.saturating_sub(*t) < 20_000 && !nodes.iter().any(|x| &x.peer == p) {
-                        nodes.push(NodeInfo { peer: p.clone(), name: Some(n.clone()), connected: false, link: "", source: "exchange", relays_us: false, we_relay: false, online: true, last_seen_ms: *t, status: statuses.get(p).cloned().unwrap_or_default() });
+                    if now.saturating_sub(*t) < 24 * 3600 * 1000 && !on_map.contains(p) && *p != local_id {
+                        nodes.push(NodeInfo { peer: p.clone(), name: Some(n.clone()), connected: false, link: "", source: "exchange", relays_us: false, we_relay: false, online: now.saturating_sub(*t) < ONLINE_MS, last_seen_ms: *t, status: statuses.get(p).cloned().unwrap_or_default() });
                     }
                 }
                 nodes.sort_by(|a, b| b.connected.cmp(&a.connected).then(b.online.cmp(&a.online)).then(b.last_seen_ms.cmp(&a.last_seen_ms)));
@@ -1438,13 +1486,14 @@ async fn run(
                                     && match &tag {
                                         // a handle is shared on purpose: found even if not listed by name
                                         Some(t) => crate::types::handle_tag(p) == *t,
-                                        None => *l && (n.to_lowercase().contains(&ql) || p.starts_with(q.as_str())),
+                                        // by name, ID, or what the person can do (specialists)
+                                        None => *l && (n.to_lowercase().contains(&ql) || p.starts_with(q.as_str()) || profiles.get(*p).map(|pr| pr.matches(&ql)).unwrap_or(false)),
                                     }
                             })
                             .map(|(p, (n, t, _))| UserCard {
                                 peer: p.clone(),
                                 name: n.clone(),
-                                online: now.saturating_sub(*t) < 20_000,
+                                online: now.saturating_sub(*t) < ONLINE_MS,
                                 last_seen_ms: *t,
                                 via: if dht_found.contains(p) { "dht" } else { "network" },
                                 status: statuses.get(p).cloned().unwrap_or_default(),
@@ -1493,7 +1542,13 @@ async fn run(
                         emit(&event_tx, UiEvent::Listening(with_p2p(&address, &local_peer).to_string()));
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, num_established, .. } => {
-                        profile_due = true;
+                        // my profile goes out on my first connection (and when it changes), not on
+                        // every connection — otherwise it floods the whole network again and again
+                        if connected_peers.is_empty() {
+                            profile_due = true;
+                        }
+                        conn_since.entry(peer_id).or_insert_with(Instant::now);
+                        if endpoint.is_dialer() { dials_out += 1 } else { dials_in += 1 }
                         conns += 1;
                         if endpoint.is_dialer() && !is_circuit(endpoint.get_remote_address()) {
                             dial_addr_of.insert(peer_id, endpoint.get_remote_address().clone());
@@ -1526,6 +1581,7 @@ async fn run(
                         conns = conns.saturating_sub(1);
                         if num_established == 0 {
                             connected_peers.remove(&peer_id);
+                            conn_since.remove(&peer_id);
                             link_of.remove(&peer_id);
                             relays_ok.remove(&peer_id);
                             relay_requested.remove(&peer_id);
@@ -1809,6 +1865,13 @@ async fn run(
                                     emit(&event_tx, UiEvent::Profile(p));
                                 }
                             }
+                            Wire::ProfileReq if th == control_hash => {
+                                // answer newcomers, but at most once per 15 s
+                                if profile_sent.map(|t| t.elapsed().as_secs() >= 15).unwrap_or(true) {
+                                    profile_due = true;
+                                }
+                            }
+                            Wire::ProfileReq => {}
                             Wire::Report(r) if th == control_hash => {
                                 if reports.add(r.clone()) {
                                     reports.save();
@@ -1970,7 +2033,7 @@ fn recompute_hub(
     let now = now_ms();
     let mut ranked: Vec<(&String, f64)> = scores
         .iter()
-        .filter(|(_, (_, ts))| now.saturating_sub(*ts) < 20_000)
+        .filter(|(_, (_, ts))| now.saturating_sub(*ts) < ONLINE_MS)
         .map(|(p, (s, _))| (p, *s))
         .collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(b.0)));
@@ -2009,7 +2072,7 @@ fn update_presence(
     let now = now_ms();
     for f in friends.values() {
         let direct = connected.iter().any(|p| p.to_base58() == f.peer_id);
-        let heard = scores.get(&f.peer_id).map(|(_, ts)| now.saturating_sub(*ts) < 20_000).unwrap_or(false);
+        let heard = scores.get(&f.peer_id).map(|(_, ts)| now.saturating_sub(*ts) < ONLINE_MS).unwrap_or(false);
         let online = direct || heard;
         if friend_online.get(&f.peer_id) != Some(&online) {
             friend_online.insert(f.peer_id.clone(), online);

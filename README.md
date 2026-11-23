@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.24</h1>
+<h1 align="center">CyberCord 0.25</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -131,6 +131,37 @@ BitTorrent): **где угодно в интернете, без сервера 
 Пока друзей нет, «+» мягко пульсирует, чтобы его было сразу видно.
 
 ![Добавить друга](docs/img/screen-add-friend.png)
+
+## Что нового в 0.25 — проверено на сети из 100 человек
+
+Новый инструмент `tools/sim.py` запускает на одном компьютере сеть из N
+пользователей, у каждого свой адрес, без локального поиска и без общего DHT;
+каждый знает только одного случайного «первого знакомого», друзей никто не
+добавлял. Потом проверяет то, что чувствует человек.
+
+**Найдено и исправлено:**
+- узлы держали соединения почти со всеми (77–94 при 100 пользователях) —
+  память росла, узлы падали от нехватки памяти. Теперь: лишние соединения
+  закрываются до ~32 (друзья, хаб, ретрансляторы и новые соединения —
+  остаются), простаивающие закрываются через 30 с, предохранитель — 256;
+- профиль с аватаром заново рассылался всей сети при каждом новом
+  соединении — теперь при первом соединении, при изменении и раз в 10 мин;
+  новичок просит профили у сети один раз (ответ не чаще раза в 15 с);
+- сигнал «я в сети» — раз в 10 с вместо 5 (вдвое меньше трафика);
+- **поиск специалистов:** поиск людей находит по навыкам, интересам,
+  работе («Electronics», «Электроника», «KiCad», «Biology»); в результатах —
+  код навыков (El8 — электроника на 8 из 10);
+- **на карте все, кого знает узел** за последние сутки, а не только «сейчас
+  в сети»; при многих людях — несколько колец, имена при наведении; рядом —
+  **список людей** с ником и навыками и кнопка **«Случайный человек —
+  познакомиться»**;
+- ник из имени с диакритикой: «Hana Müller» → `@hana_muller-…`.
+
+**Результат (50 пользователей):** каждый видит всех 49 на карте; ник найден
+за 0,6 с через DHT; поиск по имени работает; поиск «Biology» нашёл всех 6
+биологов из 6. Один узел — ~0,8 % CPU и ~27 МБ в сети из 10 человек.
+
+![Карта и поиск специалистов](docs/img/screen-map-people.png)
 
 ## Что нового в 0.24 — просьба о помощи
 
@@ -680,12 +711,12 @@ CyberCord не должен становиться инструментом дл
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.24.1-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.25.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.24.1-linux-x86_64.tar.gz
-cd cybercord-0.24.1-linux-x86_64
+tar xf cybercord-0.25.0-linux-x86_64.tar.gz
+cd cybercord-0.25.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -891,6 +922,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.25:** tested on a simulated network (`tools/sim.py`, 50–100 users with own addresses, no LAN, one random first contact each): connection trimming (~32, idle 30 s, cap 256), profiles no longer re-flooded on every connection, presence every 10 s, specialist search by skills/interests/work, map lists everyone known in the last day with multi-ring layout, a people list and a random-person button.
 
 **0.24:** asking for help — a request card (what it is for, ways to help besides money, optional details) with buttons that open a DM with a ready offer; a gentle "something went wrong" status instead of a verdict; a "trying to get out" note when such a person asks; limits against farming (1 per day, 5 per chat in 90 days, extra ones folded as spam and lower standing).
 

@@ -293,6 +293,12 @@ pub fn handle_slug(name: &str) -> String {
             'и' | 'й' | 'і' | 'ї' => "i", 'к' => "k", 'л' => "l", 'м' => "m", 'н' => "n", 'о' => "o", 'п' => "p", 'р' => "r",
             'с' => "s", 'т' => "t", 'у' => "u", 'ф' => "f", 'х' => "h", 'ц' => "ts", 'ч' => "ch", 'ш' => "sh", 'щ' => "sch",
             'ъ' | 'ь' => "", 'ы' => "y", 'ю' => "yu", 'я' => "ya", 'є' => "ye", 'ґ' => "g",
+            // Latin letters with marks: Müller → muller, José → jose, Łukasz → lukasz
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a", 'ç' | 'ć' | 'č' => "c", 'ď' | 'đ' => "d",
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => "e", 'ğ' => "g", 'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ı' => "i",
+            'ł' | 'ľ' | 'ĺ' => "l", 'ñ' | 'ń' | 'ň' => "n", 'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => "o",
+            'ŕ' | 'ř' => "r", 'ś' | 'š' | 'ş' | 'ș' => "s", 'ß' => "ss", 'ť' | 'ţ' | 'ț' => "t",
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' => "u", 'ý' | 'ÿ' => "y", 'ź' | 'ż' | 'ž' => "z", 'æ' => "ae", 'œ' => "oe", 'þ' => "th",
             c if c.is_ascii_alphanumeric() => {
                 out.push(c);
                 continue;
@@ -349,6 +355,8 @@ mod handle_tests {
         assert_eq!(handle_slug("Иван Петров"), "ivan_petrov");
         assert_eq!(handle_slug("SocioCyber (Sinus)"), "sociocyber_sinus");
         assert_eq!(handle_slug("!!!"), "user");
+        assert_eq!(handle_slug("Hana Müller"), "hana_muller");
+        assert_eq!(handle_slug("José Łukasz"), "jose_lukasz");
         let h = handle("Алиса", id);
         assert_eq!(parse_handle(&format!("@{h}")), Some(t.clone()));
         assert_eq!(parse_handle(&h.to_uppercase()), Some(t));
@@ -456,6 +464,9 @@ pub enum Wire {
     MailDrop { items: Vec<crate::e2e::Sealed> },
     /// "Received, you may delete them" (the keeper's mail topic).
     MailAck { ids: Vec<String> },
+    /// "I just joined: please send your profiles" (control topic). Each node
+    /// answers at most once a minute, however many people join.
+    ProfileReq,
     /// A signed report with proof of work (control topic); every node weighs it itself.
     Report(crate::safety::Report),
     /// A call between two friends (DM topic): ring, answer, hang up.

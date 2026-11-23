@@ -56,6 +56,9 @@ impl ChatMessage {
 
 /// The node's network behaviour: gossip for chat, mDNS for local discovery,
 /// identify to learn peers' addresses/protocols, ping to keep links warm.
+/// Safety valve only: never refuse newcomers in practice; the node itself trims to ~32.
+pub const MAX_CONNECTIONS: u32 = 256;
+
 #[derive(NetworkBehaviour)]
 pub struct CyberBehaviour {
     /// Use other users' nodes as relays when we are behind NAT (Circuit Relay v2 client).
@@ -72,6 +75,8 @@ pub struct CyberBehaviour {
     pub mdns: mdns::tokio::Behaviour,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
+    /// Hard caps on connections, so a big network cannot exhaust a node.
+    pub limits: libp2p::connection_limits::Behaviour,
     /// Torrent-like file pieces, node to node (`/cybercord/files/1`).
     pub files: libp2p::request_response::cbor::Behaviour<transfer::FileReq, transfer::FileResp>,
 }
@@ -145,6 +150,8 @@ pub fn build_swarm(keypair: Keypair) -> anyhow::Result<Swarm<CyberBehaviour>> {
 
             let mut kcfg = libp2p::kad::Config::new(libp2p::StreamProtocol::new(KAD_PROTOCOL));
             kcfg.set_query_timeout(Duration::from_secs(30));
+            // re-bootstrap the DHT every 30 min, not 5: each round dials many peers
+            kcfg.set_periodic_bootstrap_interval(Some(Duration::from_secs(1800)));
             let mut kad = libp2p::kad::Behaviour::with_config(pid, libp2p::kad::store::MemoryStore::new(pid), kcfg);
             kad.set_mode(Some(libp2p::kad::Mode::Server));
 
@@ -154,9 +161,16 @@ pub fn build_swarm(keypair: Keypair) -> anyhow::Result<Swarm<CyberBehaviour>> {
                 [(libp2p::StreamProtocol::new("/cybercord/files/1"), libp2p::request_response::ProtocolSupport::Full)],
                 libp2p::request_response::Config::default().with_request_timeout(Duration::from_secs(30)).with_max_concurrent_streams(128),
             );
-            Ok(CyberBehaviour { relay_client, relay, dcutr, kad, upnp, gossipsub, mdns, identify, ping, files })
+            let limits = libp2p::connection_limits::Behaviour::new(
+                libp2p::connection_limits::ConnectionLimits::default()
+                    .with_max_established(Some(MAX_CONNECTIONS))
+                    .with_max_established_per_peer(Some(2))
+                    .with_max_pending_incoming(Some(16))
+                    .with_max_pending_outgoing(Some(16)),
+            );
+            Ok(CyberBehaviour { relay_client, relay, dcutr, kad, upnp, gossipsub, mdns, identify, ping, limits, files })
         })?
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(30)))
         .build();
 
     Ok(swarm)

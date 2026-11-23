@@ -1745,7 +1745,7 @@ impl CyberApp {
                         let mut people: Vec<(String, bool)> = self
                             .roster
                             .iter()
-                            .filter(|(p, (_, r, seen))| r.as_deref() == Some(room.as_str()) && **p != self.self_id && now.saturating_sub(*seen) < 20_000)
+                            .filter(|(p, (_, r, seen))| r.as_deref() == Some(room.as_str()) && **p != self.self_id && now.saturating_sub(*seen) < 35_000)
                             .map(|(_, (n, _, _))| (n.clone(), self.talkers.get(n).map(|t| now.saturating_sub(*t) < 900).unwrap_or(false)))
                             .collect();
                         if mine {
@@ -1832,7 +1832,7 @@ impl CyberApp {
                     .map(|(id, pv)| {
                         let name = pv.name.clone().unwrap_or_else(|| short(id));
                         let talking = self.talkers.get(&name).map(|t| now.saturating_sub(*t) < 900).unwrap_or(false);
-                        let in_voice = self.roster.get(id).map(|(_, r, seen)| r.is_some() && now.saturating_sub(*seen) < 20_000).unwrap_or(false);
+                        let in_voice = self.roster.get(id).map(|(_, r, seen)| r.is_some() && now.saturating_sub(*seen) < 35_000).unwrap_or(false);
                         (name, self.role_of(id), pv.connected, talking, in_voice)
                     })
                     .collect();
@@ -3483,6 +3483,55 @@ impl CyberApp {
             self.settings.safety_notice_at = now_ms();
             store::save_settings(&self.settings);
         }
+    }
+
+    /// Everyone this node knows, as a list: name, handle, what they can do
+    /// (index code), and buttons — a register of people and specialists.
+    fn people_card(&mut self, ui: &mut egui::Ui) {
+        let c = th();
+        let mut people: Vec<(String, String, bool)> = self
+            .nodes
+            .iter()
+            .filter(|n| n.peer != self.self_id && n.name.is_some())
+            .map(|n| (n.peer.clone(), n.name.clone().unwrap_or_default(), n.online || n.connected))
+            .collect();
+        people.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+        let online = people.iter().filter(|p| p.2).count();
+        card(ui, &self.t("people_h").replace("{n}", &online.to_string()).replace("{t}", &people.len().to_string()), |ui| {
+            ui.set_max_width(ui.available_width());
+            ui.add(egui::Label::new(RichText::new(self.t("people_sub")).color(c.ink2).small()).wrap());
+            ui.add_space(4.0);
+            let strangers: Vec<&(String, String, bool)> = people.iter().filter(|p| p.2 && !self.friends.contains_key(&p.0)).collect();
+            if !strangers.is_empty() && ui.add(egui::Button::new(RichText::new(self.t("people_random")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).on_hover_text(self.t("people_random_tip")).clicked() {
+                let k = (now_ms() as usize / 7) % strangers.len();
+                let peer = strangers[k].0.clone();
+                self.map.selected = Some(peer.clone());
+                self.profile_view = Some(peer);
+            }
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical().id_salt("people_list").max_height(300.0).show(ui, |ui| {
+                for (peer, name, on) in people.iter().take(300) {
+                    ui.horizontal(|ui| {
+                        dot(ui, if *on { c.green } else { c.line });
+                        ui.vertical(|ui| {
+                            let r = ui.add(egui::Label::new(RichText::new(name).color(c.ink).b()).sense(egui::Sense::click()));
+                            if r.clicked() {
+                                self.profile_view = Some(peer.clone());
+                                self.map.selected = Some(peer.clone());
+                            }
+                            let code = self.profiles.get(peer).map(|p| p.code()).unwrap_or_default();
+                            let line = if code.is_empty() { format!("@{}", cybercord_node::types::handle(name, peer)) } else { format!("@{} · {code}", cybercord_node::types::handle(name, peer)) };
+                            ui.label(RichText::new(line).color(c.ink2).small().monospace());
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button(self.t("node_msg")).clicked() {
+                                self.befriend(peer, name, true);
+                            }
+                        });
+                    });
+                }
+            });
+        });
     }
 
     // ---- asking for help ----
@@ -6811,7 +6860,27 @@ impl CyberApp {
                     let status = if online && !u.status.is_empty() { self.status_label(&u.status).to_string() } else if online { self.t("lg_online").to_string() } else { self.t("last_seen").replace("{t}", &self.ago(u.last_seen_ms)) };
                     let via = if u.via == "dht" { format!(" · {}", self.t("find_dht")) } else { String::new() };
                     ui.colored_label(c.ink2, RichText::new(format!("{status} · @{}{via}", cybercord_node::types::handle(&u.name, &u.peer))).small());
+                    if let Some(code) = self.profiles.get(&u.peer).map(|p| p.code()).filter(|c| !c.is_empty()) {
+                        ui.label(RichText::new(code).color(c.accent).small().monospace());
+                    }
+                    if compact {
+                        // narrow column: buttons under the name, not over it
+                        ui.horizontal_wrapped(|ui| {
+                            if !self.friends.contains_key(&u.peer) && ui.add(egui::Button::new(RichText::new(self.t("node_add")).color(c.on_accent).b().small()).fill(c.green).rounding(Rounding::same(6.0))).clicked() {
+                                self.befriend(&u.peer, &u.name, false);
+                            }
+                            if ui.small_button(self.t("node_msg")).clicked() {
+                                self.befriend(&u.peer, &u.name, true);
+                            }
+                            if ui.small_button(self.t("profile_open")).clicked() {
+                                self.profile_view = Some(u.peer.clone());
+                            }
+                        });
+                    }
                 });
+                if compact {
+                    return;
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.friends.contains_key(&u.peer) {
                         if ui.add(egui::Button::new(RichText::new(self.t("node_msg")).color(c.on_accent)).fill(c.accent).rounding(Rounding::same(8.0))).clicked() {
@@ -6870,26 +6939,41 @@ impl CyberApp {
             let shown: Vec<&cybercord_node::types::NodeInfo> = nodes.iter().take(160).collect();
             // Evenly spread each orbit, ordered by a stable per-node angle (no overlaps).
             let ring_of = |n: &cybercord_node::types::NodeInfo| if n.connected { 0 } else if n.online { 1 } else { 2 };
-            let mut slot: HashMap<String, (usize, usize)> = HashMap::new();
-            for ring in 0..3 {
-                let mut ids: Vec<&str> = shown.iter().filter(|n| ring_of(n) == ring).map(|n| n.peer.as_str()).collect();
+            // Many people: each group (connected / online / known) gets as many
+            // concentric rings as it needs, so dots never pile up.
+            let crowd = shown.len();
+            let dot = |g: usize| -> f32 {
+                let base = [15.0, 10.0, 6.5][g];
+                if crowd > 40 { base * 0.72 } else { base }
+            };
+            let bands = [(0.17f32, 0.31f32), (0.33, 0.42), (0.44, 0.49)];
+            let mut slot: HashMap<String, (usize, usize, f32)> = HashMap::new();
+            for g in 0..3 {
+                let mut ids: Vec<&str> = shown.iter().filter(|n| ring_of(n) == g).map(|n| n.peer.as_str()).collect();
                 ids.sort_by(|a, b| hash01(a, 1).total_cmp(&hash01(b, 1)));
-                let total = ids.len();
-                for (i, id) in ids.into_iter().enumerate() {
-                    slot.insert(id.to_string(), (i, total));
+                let (lo, hi) = bands[g];
+                let spacing = dot(g) * 2.0 + 10.0;
+                let mut radius = lo;
+                let mut k = 0;
+                while k < ids.len() {
+                    let cap = ((std::f32::consts::TAU * radius * m) / spacing).floor().max(6.0) as usize;
+                    let take = cap.min(ids.len() - k);
+                    for (j, id) in ids[k..k + take].iter().enumerate() {
+                        slot.insert(id.to_string(), (j, take, radius));
+                    }
+                    k += take;
+                    radius = (radius + (spacing + 6.0) / m).min(hi);
                 }
             }
             let mut placed: Vec<(String, Pos2, f32)> = Vec::new();
             for n in &shown {
-                let ring = [0.27, 0.37, 0.45][ring_of(n)];
-                let (i, total) = slot.get(&n.peer).copied().unwrap_or((0, 1));
-                let ang = std::f32::consts::TAU * (i as f32 / total.max(1) as f32) + ring_of(n) as f32 * 0.5 + time * 0.015;
-                let jitter = if ring_of(n) == 2 { (hash01(&n.peer, 7) - 0.5) * 0.04 } else { 0.0 };
-                let target = egui::vec2(ang.cos(), ang.sin()) * m * (ring + jitter);
+                let g = ring_of(n);
+                let (i, total, radius) = slot.get(&n.peer).copied().unwrap_or((0, 1, bands[g].0));
+                let ang = std::f32::consts::TAU * (i as f32 / total.max(1) as f32) + g as f32 * 0.5 + radius * 7.0 + time * 0.015;
+                let target = egui::vec2(ang.cos(), ang.sin()) * m * radius;
                 let p = self.map.pos.entry(n.peer.clone()).or_insert(target * 1.3);
                 *p += (target - *p) * 0.08;
-                let r = if n.connected { 15.0 } else if n.online { 10.0 } else { 6.5 };
-                placed.push((n.peer.clone(), center + *p, r));
+                placed.push((n.peer.clone(), center + *p, dot(g)));
             }
             // edges
             for (n, (_, pos, _)) in shown.iter().zip(placed.iter()) {
@@ -6944,7 +7028,7 @@ impl CyberApp {
                     let initial = name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
                     painter.text(*pos, Align2::CENTER_CENTER, initial, egui::FontId::new(r * 0.95, egui::FontFamily::Name("bold".into())), c.on_accent);
                 }
-                if n.connected || sel || hov {
+                if (n.connected && crowd <= 24) || sel || hov {
                     let label = if name.is_empty() { short(id) } else { name.clone() };
                     painter.text(*pos + egui::vec2(0.0, r + 9.0), Align2::CENTER_CENTER, label, egui::FontId::proportional(12.0), c.ink);
                 }
@@ -6974,7 +7058,7 @@ impl CyberApp {
             // ---------- side column ----------
             ui.vertical(|ui| {
                 ui.set_width(side_w);
-                egui::ScrollArea::vertical().id_salt("map_side").max_height(avail.y).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("map_side").max_height(ui.available_height()).show(ui, |ui| {
                     card(ui, self.t("map_title"), |ui| {
                         ui.label(
                             RichText::new(self.t("map_people").replace("{o}", &online.to_string()).replace("{k}", &nodes.len().to_string()).replace("{c}", &connected.to_string()))
@@ -7048,6 +7132,8 @@ impl CyberApp {
                     card(ui, self.t("find_people"), |ui| {
                         self.people_search(ui, true);
                     });
+                    ui.add_space(10.0);
+                    self.people_card(ui);
                 });
             });
         });

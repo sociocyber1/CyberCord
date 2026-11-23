@@ -220,6 +220,23 @@ pub const CATALOG: &[Entry] = cat![
     "Ev", "people", "Мероприятия", "Events";
 ];
 
+impl Profile {
+    /// Does this person do / know what the query asks? (Specialist search: a skill
+    /// code like "El", a skill name in Russian or English, interests, work, tasks.)
+    pub fn matches(&self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.chars().count() < 2 {
+            return false;
+        }
+        let skill = |id: &str| -> bool {
+            id.to_lowercase() == q || find(id).map(|e| e.ru.to_lowercase().contains(&q) || e.en.to_lowercase().contains(&q)).unwrap_or(false)
+        };
+        self.skills.iter().any(|s| skill(&s.id) || s.note.to_lowercase().contains(&q))
+            || self.interests.iter().any(|i| skill(i) || i.to_lowercase().contains(&q))
+            || (q.chars().count() >= 3 && (self.job.to_lowercase().contains(&q) || self.tasks.to_lowercase().contains(&q) || self.activity.to_lowercase().contains(&q)))
+    }
+}
+
 pub fn find(code: &str) -> Option<&'static Entry> {
     CATALOG.iter().find(|e| e.code == code)
 }
