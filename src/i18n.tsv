@@ -677,3 +677,11 @@ invite_scan	Scan to download CyberCord	Наведите камеру — ска�
 invite_scan_short	Scan to download	Скачать CyberCord	Завантажити CyberCord	Scannen und laden	Escanea y descarga	Scannez et téléchargez	扫码下载	スキャンして入手
 invite_tagline	Chat and voice without servers. Every user is a node of the network.	Чат и голосовые без серверов. Каждый пользователь — узел сети.	Чат і голосові без серверів. Кожен користувач — вузол мережі.	Chat und Sprache ohne Server. Jeder Nutzer ist ein Knoten.	Chat y voz sin servidores. Cada usuario es un nodo.	Chat et voix sans serveurs. Chaque utilisateur est un nœud.	无服务器的聊天和语音。每个用户都是网络节点。	サーバーなしのチャットと通話。全員がネットワークのノード。
 invite_find_me	Find me in CyberCord: {name}	Найди меня в CyberCord: {name}	Знайди мене в CyberCord: {name}	Finde mich in CyberCord: {name}	Búscame en CyberCord: {name}	Trouve-moi sur CyberCord : {name}	在 CyberCord 找我：{name}	CyberCord で {name} を探してね
+addf_title	Add a friend	Добавить друга	Додати друга	Freund hinzufügen	Añadir amigo	Ajouter un ami	添加好友	友だちを追加
+addf_tip	Add a friend · your code	Добавить друга · ваш код	Додати друга · ваш код	Freund hinzufügen · Ihr Code	Añadir amigo · tu código	Ajouter un ami · votre code	添加好友 · 你的代码	友だち追加・自分のコード
+addf_btn	+  Add a friend	+  Добавить друга	+  Додати друга	+  Freund hinzufügen	+  Añadir amigo	+  Ajouter un ami	+  添加好友	+  友だちを追加
+friends_page	Friends page	Страница друзей	Сторінка друзів	Freunde-Seite	Página de amigos	Page des amis	好友页面	友だちページ
+addf_s1	1. Find them by name	1. Найдите по имени	1. Знайдіть за ім'ям	1. Nach Namen suchen	1. Búscalo por nombre	1. Cherchez par nom	1. 按名字查找	1. 名前で探す
+addf_s2	2. Or send your code to your friend	2. Или отправьте другу свой код	2. Або надішліть другові свій код	2. Oder senden Sie Ihren Code	2. O envía tu código a tu amigo	2. Ou envoyez votre code à votre ami	2. 或把你的代码发给朋友	2. または自分のコードを送る
+addf_s3	3. …and paste the code your friend sent you	3. …и вставьте код, который прислал друг	3. …і вставте код, який надіслав друг	3. …und fügen Sie den Code Ihres Freundes ein	3. …y pega el código de tu amigo	3. …et collez le code de votre ami	3. …并粘贴朋友发来的代码	3. …友だちのコードを貼り付ける
+addf_not_yet	Your friend has no CyberCord yet?	Друга ещё нет в CyberCord?	Друга ще немає в CyberCord?	Ihr Freund hat noch kein CyberCord?	¿Tu amigo aún no tiene CyberCord?	Votre ami n'a pas encore CyberCord ?	朋友还没有 CyberCord？	友だちはまだ CyberCord を使っていない？

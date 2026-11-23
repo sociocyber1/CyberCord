@@ -223,6 +223,7 @@ pub struct CyberApp {
     call: CallState,
     call_tone_at: Option<Instant>,
     show_invite: bool,
+    show_add_friend: bool,
     invite_qr: Option<egui::TextureHandle>,
     /// Scientific article search
     show_papers: bool,
@@ -400,6 +401,7 @@ impl CyberApp {
             call: CallState::Idle,
             call_tone_at: None,
             show_invite: false,
+            show_add_friend: false,
             invite_qr: None,
             show_papers: false,
             papers: crate::papers::Search::default(),
@@ -510,6 +512,7 @@ impl CyberApp {
                         self.show_dev = true;
                     }
                     "invite" => self.show_invite = true,
+                    "addfriend" => self.show_add_friend = true,
                     "proftab" => {
                         self.show_settings = true;
                         self.set_tab = SetTab::Profile;
@@ -1435,6 +1438,7 @@ impl eframe::App for CyberApp {
         self.call_tick(ctx);
         self.call_window(ctx);
         self.invite_window(ctx);
+        self.add_friend_window(ctx);
         self.dev_window(ctx);
         self.pdf_overlay(ctx);
         self.draw_toast(ctx);
@@ -1471,6 +1475,24 @@ impl CyberApp {
                         let online = self.friends.values().filter(|f| f.online).count();
                         let tex = self.icons.get(ui.ctx(), "friends", FRIENDS_TILE);
                         let badge = if online > 0 { Some(online) } else { None };
+                        // add a friend: always one click away (pulses while the list is empty)
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::click());
+                        {
+                            let k = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.15);
+                            let p = ui.painter();
+                            if self.friends.is_empty() {
+                                let t = self.started.elapsed().as_secs_f32();
+                                let ph = (t * 0.7) % 1.0;
+                                p.rect_stroke(r.expand(2.0 + ph * 6.0), Rounding::same(16.0 + ph * 4.0), Stroke::new(2.0, th().green.gamma_multiply(1.0 - ph)));
+                                ui.ctx().request_repaint_after(Duration::from_millis(50));
+                            }
+                            p.rect_filled(r.expand(2.0 * k), Rounding::same(14.0), th().green);
+                            plus_glyph(p, r.center(), 11.0, Color32::WHITE);
+                        }
+                        if resp.on_hover_text(self.t("addf_tip")).clicked() {
+                            self.open_add_friend();
+                        }
+                        ui.add_space(8.0);
                         let fr = rail_tile(ui, tex, fr_on, badge).on_hover_text(self.t("friends_tip").replace("{n}", &online.to_string()));
                         self.anchor("friends_btn", fr.rect);
                         if fr.clicked() {
@@ -1805,8 +1827,13 @@ impl CyberApp {
         let online = self.friends.values().filter(|f| f.online).count();
         ui.colored_label(th().ink2, self.t("friends_count").replace("{o}", &online.to_string()).replace("{t}", &self.friends.len().to_string()));
         ui.add_space(6.0);
+        let w = ui.available_width();
+        if ui.add(egui::Button::new(RichText::new(self.t("addf_btn")).color(th().on_accent).b()).fill(th().green).rounding(Rounding::same(8.0)).min_size(egui::vec2(w, 34.0))).on_hover_text(self.t("addf_tip")).clicked() {
+            self.open_add_friend();
+        }
+        ui.add_space(2.0);
         let add_sel = self.dm_open.is_none();
-        if ui.selectable_label(add_sel, RichText::new(self.t("add_friend_link")).color(if add_sel { th().ink } else { th().accent })).clicked() {
+        if ui.selectable_label(add_sel, RichText::new(self.t("friends_page")).color(if add_sel { th().ink } else { th().accent })).clicked() {
             self.dm_open = None;
         }
         ui.add_space(4.0);
@@ -1854,59 +1881,14 @@ impl CyberApp {
             self.invite_card(ui);
             ui.add_space(10.0);
 
-            let code = self.connect_code();
             let r = card(ui, self.t("your_code"), |ui| {
-                ui.colored_label(th().ink2, self.t("your_code_body"));
-                ui.add_space(6.0);
-                let mut shown = if code.is_empty() { self.t("starting").to_string() } else { code.clone() };
-                ui.add(egui::TextEdit::multiline(&mut shown).font(egui::TextStyle::Monospace).desired_rows(3).desired_width(f32::INFINITY));
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(RichText::new(self.t("copy_code")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
-                        ui.output_mut(|o| o.copied_text = code.clone());
-                        let m = self.t("code_copied").to_string();
-                        self.toast(m);
-                    }
-                    if ui.add(egui::Button::new(RichText::new(self.t("copy_id")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).on_hover_text(self.t("your_id_body")).clicked() {
-                        ui.output_mut(|o| o.copied_text = self.self_id.clone());
-                        let m = self.t("id_copied").to_string();
-                        self.toast(m);
-                    }
-                    ui.colored_label(th().ink2, RichText::new(format!("{}: {}", self.t("your_id"), short(&self.self_id))).monospace().small());
-                });
+                self.my_code_body(ui);
             });
             self.anchor("code", r);
             ui.add_space(10.0);
 
             card(ui, self.t("add_a_friend"), |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(th().ink2, self.t("name"));
-                    let hint = self.t("name_hint");
-                    ui.add(egui::TextEdit::singleline(&mut self.add_name).hint_text(hint).desired_width(220.0));
-                });
-                ui.add_space(4.0);
-                ui.colored_label(th().ink2, self.t("their_code"));
-                ui.add(egui::TextEdit::multiline(&mut self.add_code).font(egui::TextStyle::Monospace).hint_text("12D3Koo…   /ip4/…/p2p/12D3Koo…").desired_rows(3).desired_width(f32::INFINITY));
-                ui.add_space(6.0);
-                if ui.add(egui::Button::new(RichText::new(self.t("add_btn")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
-                    match parse_connect_code(&self.add_code) {
-                        Some((peer_id, _)) if peer_id == self.self_id => self.add_msg = self.t("own_code").to_string(),
-                        Some((peer_id, addrs)) => {
-                            let name = if self.add_name.trim().is_empty() { short(&peer_id) } else { self.add_name.trim().to_string() };
-                            let _ = self.handle.cmd_tx.send(Cmd::AddFriend(Friend { peer_id: peer_id.clone(), name: name.clone(), addrs }));
-                            self.friends.entry(peer_id.clone()).or_insert(FriendView { name: name.clone(), online: false });
-                            self.add_msg = self.t("added").replace("{name}", &name);
-                            self.add_code.clear();
-                            self.add_name.clear();
-                            self.dm_open = Some(peer_id);
-                        }
-                        None => self.add_msg = self.t("bad_code").to_string(),
-                    }
-                }
-                if !self.add_msg.is_empty() {
-                    ui.add_space(4.0);
-                    ui.colored_label(th().accent, &self.add_msg);
-                }
+                self.add_friend_body(ui);
             });
             ui.add_space(10.0);
             self.network_card(ui, false);
@@ -2524,7 +2506,7 @@ impl CyberApp {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(&self.self_name).color(th().ink).b());
                     let st = self.settings.status.clone();
-                    let label = if st.is_empty() { short(&self.self_id) } else { self.status_label(&st).to_string() };
+                    let label = if st.is_empty() { format!("{}…", self.self_id.chars().take(7).collect::<String>()) } else { self.status_label(&st).to_string() };
                     let col = status_color(&st).unwrap_or(th().ink2);
                     ui.menu_button(RichText::new(format!("● {label}")).color(col).small(), |ui| {
                         for (sid, key) in crate::tray::STATUSES {
@@ -2543,6 +2525,14 @@ impl CyberApp {
                     if g.clicked() {
                         self.show_settings = true;
                         self.set_opened = Instant::now();
+                    }
+                    // add a friend / my code, next to the settings
+                    let (r, resp) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::click());
+                    let k = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+                    ui.painter().rect_filled(r, Rounding::same(8.0), th().green.gamma_multiply(0.85 + 0.15 * k));
+                    plus_glyph(ui.painter(), r.center(), 7.0, th().on_accent);
+                    if resp.on_hover_text(self.t("addf_tip")).clicked() {
+                        self.open_add_friend();
                     }
                 });
             });
@@ -3005,6 +2995,103 @@ impl CyberApp {
         }
     }
 
+    /// "Your code": the connect code with copy buttons.
+    fn my_code_body(&mut self, ui: &mut egui::Ui) {
+        let code = self.connect_code();
+        ui.colored_label(th().ink2, self.t("your_code_body"));
+        ui.add_space(6.0);
+        let mut shown = if code.is_empty() { self.t("starting").to_string() } else { code.clone() };
+        ui.add(egui::TextEdit::multiline(&mut shown).font(egui::TextStyle::Monospace).desired_rows(3).desired_width(f32::INFINITY));
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.add(egui::Button::new(RichText::new(self.t("copy_code")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
+                ui.output_mut(|o| o.copied_text = code.clone());
+                let m = self.t("code_copied").to_string();
+                self.toast(m);
+            }
+            if ui.add(egui::Button::new(RichText::new(self.t("copy_id")).color(th().ink)).fill(th().card).rounding(Rounding::same(8.0))).on_hover_text(self.t("your_id_body")).clicked() {
+                ui.output_mut(|o| o.copied_text = self.self_id.clone());
+                let m = self.t("id_copied").to_string();
+                self.toast(m);
+            }
+            ui.colored_label(th().ink2, RichText::new(format!("{}: {}", self.t("your_id"), short(&self.self_id))).monospace().small());
+        });
+    }
+
+    /// "Add a friend": name + their code + Add.
+    fn add_friend_body(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.colored_label(th().ink2, self.t("name"));
+            let hint = self.t("name_hint");
+            ui.add(egui::TextEdit::singleline(&mut self.add_name).hint_text(hint).desired_width(220.0));
+        });
+        ui.add_space(4.0);
+        ui.colored_label(th().ink2, self.t("their_code"));
+        ui.add(egui::TextEdit::multiline(&mut self.add_code).font(egui::TextStyle::Monospace).hint_text("12D3Koo…   /ip4/…/p2p/12D3Koo…").desired_rows(3).desired_width(f32::INFINITY));
+        ui.add_space(6.0);
+        if ui.add(egui::Button::new(RichText::new(self.t("add_btn")).color(th().on_accent).b()).fill(th().accent).rounding(Rounding::same(8.0))).clicked() {
+            match parse_connect_code(&self.add_code) {
+                Some((peer_id, _)) if peer_id == self.self_id => self.add_msg = self.t("own_code").to_string(),
+                Some((peer_id, addrs)) => {
+                    let name = if self.add_name.trim().is_empty() { short(&peer_id) } else { self.add_name.trim().to_string() };
+                    let _ = self.handle.cmd_tx.send(Cmd::AddFriend(Friend { peer_id: peer_id.clone(), name: name.clone(), addrs }));
+                    self.friends.entry(peer_id.clone()).or_insert(FriendView { name: name.clone(), online: false });
+                    self.add_msg = self.t("added").replace("{name}", &name);
+                    self.add_code.clear();
+                    self.add_name.clear();
+                    self.dm_open = Some(peer_id);
+                }
+                None => self.add_msg = self.t("bad_code").to_string(),
+            }
+        }
+        if !self.add_msg.is_empty() {
+            ui.add_space(4.0);
+            ui.colored_label(th().accent, &self.add_msg);
+        }
+    }
+
+    /// One window with everything for adding a friend: search by name,
+    /// my code to send, their code to paste, and an invitation.
+    fn add_friend_window(&mut self, ctx: &egui::Context) {
+        if !self.show_add_friend {
+            return;
+        }
+        let c = th();
+        let mut open = true;
+        egui::Window::new(self.t("addf_title")).open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).order(Order::Foreground).show(ctx, |ui| {
+            ui.set_width(560.0);
+            egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() - 140.0).show(ui, |ui| {
+                ui.label(RichText::new(self.t("addf_s1")).color(c.ink).b());
+                self.people_search(ui, true);
+                ui.add_space(10.0);
+                ui.separator();
+                ui.label(RichText::new(self.t("addf_s2")).color(c.ink).b());
+                self.my_code_body(ui);
+                ui.add_space(10.0);
+                ui.separator();
+                ui.label(RichText::new(self.t("addf_s3")).color(c.ink).b());
+                self.add_friend_body(ui);
+                ui.add_space(10.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.colored_label(c.ink2, self.t("addf_not_yet"));
+                    if ui.add(egui::Button::new(RichText::new(self.t("invite_btn")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(8.0))).clicked() {
+                        self.show_invite = true;
+                        self.show_add_friend = false;
+                    }
+                });
+            });
+        });
+        if !open {
+            self.show_add_friend = false;
+        }
+    }
+
+    fn open_add_friend(&mut self) {
+        self.show_add_friend = true;
+        self.add_msg.clear();
+    }
+
     // ---- inviting friends ----
 
     fn invite_card(&mut self, ui: &mut egui::Ui) {
@@ -3017,9 +3104,14 @@ impl CyberApp {
                     ui.label(RichText::new(self.t("invite_h")).color(c.ink).b().size(16.0));
                     ui.add(egui::Label::new(RichText::new(self.t("invite_sub")).color(c.ink2)).wrap());
                 });
-                if ui.add(egui::Button::new(RichText::new(self.t("invite_btn")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(10.0)).min_size(egui::vec2(170.0, 38.0))).clicked() {
-                    self.show_invite = true;
-                }
+                ui.vertical(|ui| {
+                    if ui.add(egui::Button::new(RichText::new(self.t("invite_btn")).color(c.on_accent).b()).fill(c.green).rounding(Rounding::same(10.0)).min_size(egui::vec2(170.0, 34.0))).clicked() {
+                        self.show_invite = true;
+                    }
+                    if ui.add(egui::Button::new(RichText::new(self.t("addf_btn")).color(c.ink).b()).fill(c.card).rounding(Rounding::same(10.0)).min_size(egui::vec2(170.0, 34.0))).clicked() {
+                        self.open_add_friend();
+                    }
+                });
             });
         });
     }
@@ -4895,6 +4987,13 @@ fn rail_tile(ui: &mut egui::Ui, tex: egui::TextureId, selected: bool, badge: Opt
         p.text(c, Align2::CENTER_CENTER, n.min(99).to_string(), egui::FontId::new(10.0, egui::FontFamily::Name("bold".into())), th().on_accent);
     }
     resp
+}
+
+/// A rounded "+" drawn with two strokes (crisp at any scale, no font glyph).
+fn plus_glyph(p: &egui::Painter, c: Pos2, half: f32, col: Color32) {
+    let w = (half * 0.32).max(2.0);
+    p.line_segment([c - egui::vec2(half, 0.0), c + egui::vec2(half, 0.0)], Stroke::new(w, col));
+    p.line_segment([c - egui::vec2(0.0, half), c + egui::vec2(0.0, half)], Stroke::new(w, col));
 }
 
 /// One channel line with a symbolic icon (# or speaker).

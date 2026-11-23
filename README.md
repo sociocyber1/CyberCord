@@ -106,6 +106,19 @@ QR-код со ссылкой на скачивание и **карточка-к
 
 ![Карточка-приглашение](docs/img/invite-card.png)
 
+## Как добавить друга
+
+Нажмите **зелёный «+»** — он всегда вверху левой полосы (и рядом с
+шестерёнкой внизу, и в списке друзей). Откроется одно окно:
+
+1. **найти по имени**;
+2. или **скопировать свой код** и отправить другу в любом мессенджере;
+3. **вставить код**, который прислал друг.
+
+Пока друзей нет, «+» мягко пульсирует, чтобы его было сразу видно.
+
+![Добавить друга](docs/img/screen-add-friend.png)
+
 ## Что нового в 0.20
 
 - **Звонки другу.** Кнопка «Позвонить» в личке: у друга появляется окно
@@ -559,12 +572,12 @@ QR-код со ссылкой на скачивание и **карточка-к
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.20.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.20.1-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.20.0-linux-x86_64.tar.gz
-cd cybercord-0.20.0-linux-x86_64
+tar xf cybercord-0.20.1-linux-x86_64.tar.gz
+cd cybercord-0.20.1-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -770,6 +783,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.20.1:** a green "+" (top of the left bar, next to the settings gear, in the friends list) opens one "Add a friend" window: search by name, copy your code, paste theirs; it pulses while you have no friends yet.
 
 **0.20:** calls between friends with an incoming-call window, ringtone, accept/decline, busy/missed/no-answer states (signals over the DM topic, sound over the DM voice room); soft synthesised interface sounds (pentatonic, no sound files) with a sound logo, volume and per-group switches; "Invite a friend": ready text, QR code and a 1200×630 PNG card.
 
