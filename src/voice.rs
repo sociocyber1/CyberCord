@@ -37,14 +37,132 @@ pub fn chosen_devices() -> (Option<String>, Option<String>) {
     DEVICES.read().map(|d| d.clone()).unwrap_or((None, None))
 }
 
-/// Names of the microphones the system offers (empty without the `voice` feature).
+// ---- understandable device names ----
+//
+// On Linux cpal lists raw ALSA names: every card in every mode
+// ("surround40:CARD=PCH,DEV=0", "iec958:…", "dmix:…", "front:…"), so a USB
+// microphone hides among dozens of entries. We keep one entry per card and
+// device and name it from /proc/asound/cards ("fifine Microphone").
+
+/// ALSA card id → long name, e.g. "Microphone" → "fifine Microphone".
+pub fn alsa_cards() -> std::collections::HashMap<String, String> {
+    let text = std::fs::read_to_string("/proc/asound/cards").unwrap_or_default();
+    parse_alsa_cards(&text)
+}
+
+pub fn parse_alsa_cards(text: &str) -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    for line in text.lines() {
+        // " 1 [Microphone     ]: USB-Audio - fifine Microphone"
+        let (Some(a), Some(b)) = (line.find('['), line.find("]:")) else { continue };
+        if a > b {
+            continue;
+        }
+        let id = line[a + 1..b].trim().to_string();
+        let rest = &line[b + 2..];
+        let long = rest.split_once(" - ").map(|(_, l)| l.trim()).unwrap_or(rest.trim()).to_string();
+        if !id.is_empty() {
+            m.insert(id, long);
+        }
+    }
+    m
+}
+
+/// "sysdefault:CARD=Microphone,DEV=0" → ("sysdefault", Some("Microphone"), 0).
+fn split_alsa(name: &str) -> (&str, Option<&str>, u32) {
+    let (kind, args) = name.split_once(':').unwrap_or((name, ""));
+    let mut card = None;
+    let mut dev = 0;
+    for kv in args.split(',') {
+        if let Some(c) = kv.strip_prefix("CARD=") {
+            card = Some(c);
+        } else if let Some(d) = kv.strip_prefix("DEV=") {
+            dev = d.parse().unwrap_or(0);
+        }
+    }
+    (kind, card, dev)
+}
+
+/// One sensible entry per card/device, system mixers first; raw names that
+/// are not ALSA-style (Windows, macOS) pass through unchanged.
+pub fn tidy_devices(names: Vec<String>, output: bool) -> Vec<String> {
+    const SYSTEM: [&str; 3] = ["pipewire", "pulse", "default"];
+    let rank = |kind: &str| -> Option<u8> {
+        match kind {
+            "sysdefault" => Some(0),
+            "front" if output => Some(1),
+            "plughw" => Some(2),
+            "hw" => Some(3),
+            "hdmi" if output => Some(0),
+            _ => None,
+        }
+    };
+    let mut system: Vec<String> = Vec::new();
+    let mut best: Vec<((String, u32, bool), (u8, String))> = Vec::new();
+    let mut other: Vec<String> = Vec::new();
+    for n in names {
+        if SYSTEM.contains(&n.as_str()) {
+            if !system.contains(&n) {
+                system.push(n);
+            }
+            continue;
+        }
+        let (kind, card, dev) = split_alsa(&n);
+        match (card, rank(kind)) {
+            (Some(c), Some(r)) => {
+                let key = (c.to_string(), dev, kind == "hdmi");
+                match best.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, cur)) if r < cur.0 => *cur = (r, n.clone()),
+                    Some(_) => {}
+                    None => best.push((key, (r, n.clone()))),
+                }
+            }
+            // other ALSA modes of a card (surround, iec958, dmix, dsnoop…): hide
+            (Some(_), None) => {}
+            // virtual ALSA plugins: hide; anything else (other systems): keep
+            (None, _) if n.contains(':') || ["null", "jack", "oss", "lavrate", "samplerate", "speexrate", "upmix", "vdownmix", "a52", "usbstream"].contains(&kind) => {}
+            (None, _) => other.push(n),
+        }
+    }
+    system.sort_by_key(|s| SYSTEM.iter().position(|x| x == s));
+    let mut out = system;
+    out.extend(best.into_iter().map(|(_, (_, n))| n));
+    out.extend(other);
+    out
+}
+
+/// A name people understand: "fifine Microphone", "HDA Intel PCH — HDMI 1",
+/// "PipeWire". Unknown names are returned as they are.
+pub fn friendly_name(id: &str, cards: &std::collections::HashMap<String, String>) -> String {
+    match id {
+        "pipewire" => return "PipeWire".into(),
+        "pulse" => return "PulseAudio".into(),
+        "default" => return "ALSA".into(),
+        _ => {}
+    }
+    let (kind, card, dev) = split_alsa(id);
+    match card {
+        Some(c) => {
+            let base = cards.get(c).cloned().unwrap_or_else(|| c.to_string());
+            if kind == "hdmi" {
+                format!("{base} — HDMI {}", dev + 1)
+            } else if dev > 0 {
+                format!("{base} ({})", dev + 1)
+            } else {
+                base
+            }
+        }
+        None => id.to_string(),
+    }
+}
+
+/// Microphones the system offers, tidied (empty without the `voice` feature).
 pub fn list_inputs() -> Vec<String> {
     #[cfg(feature = "voice")]
     {
         use cpal::traits::{DeviceTrait, HostTrait};
-        let mut v: Vec<String> = cpal::default_host().input_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
-        v.dedup();
-        v
+        let v: Vec<String> = cpal::default_host().input_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+        tidy_devices(v, false)
     }
     #[cfg(not(feature = "voice"))]
     Vec::new()
@@ -55,9 +173,8 @@ pub fn list_outputs() -> Vec<String> {
     #[cfg(feature = "voice")]
     {
         use cpal::traits::{DeviceTrait, HostTrait};
-        let mut v: Vec<String> = cpal::default_host().output_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
-        v.dedup();
-        v
+        let v: Vec<String> = cpal::default_host().output_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+        tidy_devices(v, true)
     }
     #[cfg(not(feature = "voice"))]
     Vec::new()
@@ -393,5 +510,29 @@ mod tests {
         let mut out = Vec::new();
         rs.push(&[1, 2, 3], &mut out);
         assert_eq!(out, vec![1, 2, 3]);
+    }
+}
+
+#[cfg(test)]
+mod device_name_tests {
+    use super::*;
+
+    #[test]
+    fn understandable_names() {
+        let cards = parse_alsa_cards(" 0 [PCH            ]: HDA-Intel - HDA Intel PCH\n                      HDA Intel PCH at 0xf7f10000 irq 32\n 1 [Microphone     ]: USB-Audio - fifine Microphone\n                      fifine fifine Microphone at usb-0000:00:14.0-2, full speed\n");
+        assert_eq!(cards.get("Microphone").map(String::as_str), Some("fifine Microphone"));
+        let raw: Vec<String> = ["default", "pipewire", "surround40:CARD=PCH,DEV=0", "iec958:CARD=PCH,DEV=0", "sysdefault:CARD=PCH", "front:CARD=PCH,DEV=0", "hw:CARD=PCH,DEV=0", "plughw:CARD=PCH,DEV=0", "dsnoop:CARD=Microphone,DEV=0", "hw:CARD=Microphone,DEV=0", "plughw:CARD=Microphone,DEV=0", "sysdefault:CARD=Microphone", "null", "lavrate", "hdmi:CARD=PCH,DEV=0"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let ins = tidy_devices(raw.clone(), false);
+        assert_eq!(ins, vec!["pipewire", "default", "sysdefault:CARD=PCH", "sysdefault:CARD=Microphone"]);
+        let names: Vec<String> = ins.iter().map(|i| friendly_name(i, &cards)).collect();
+        assert_eq!(names, vec!["PipeWire", "ALSA", "HDA Intel PCH", "fifine Microphone"]);
+        let outs = tidy_devices(raw, true);
+        assert!(outs.contains(&"hdmi:CARD=PCH,DEV=0".to_string()));
+        assert_eq!(friendly_name("hdmi:CARD=PCH,DEV=0", &cards), "HDA Intel PCH — HDMI 1");
+        // Windows-style names pass through
+        assert_eq!(tidy_devices(vec!["Microphone (fifine Microphone)".into()], false), vec!["Microphone (fifine Microphone)"]);
     }
 }

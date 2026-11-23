@@ -5933,7 +5933,15 @@ impl CyberApp {
         ui.add_space(14.0);
         let (outs, ins) = self.dev_lists.clone().unwrap_or_default();
         let default = self.t("dev_default").to_string();
-        let shown = |v: &str| if v.is_empty() { default.clone() } else { v.to_string() };
+        let cards = voice::alsa_cards();
+        let sys_note = self.t("dev_system").to_string();
+        let shown = |v: &str| -> String {
+            if v.is_empty() {
+                return default.clone();
+            }
+            let n = voice::friendly_name(v, &cards);
+            if matches!(v, "pipewire" | "pulse" | "default") { format!("{n} — {sys_note}") } else { n }
+        };
         let mut dev_changed = false;
         let mut levels_changed = false;
         let col_w = ((ui.available_width() - 24.0) / 2.0).max(200.0);
@@ -5948,7 +5956,7 @@ impl CyberApp {
                 egui::ComboBox::from_id_salt("in_dev").selected_text(shown(&sel)).width(col_w - 8.0).show_ui(ui, |ui| {
                     ui.selectable_value(&mut sel, String::new(), &default);
                     for d in &ins {
-                        ui.selectable_value(&mut sel, d.clone(), d);
+                        ui.selectable_value(&mut sel, d.clone(), shown(d)).on_hover_text(d);
                     }
                 });
                 if sel != self.settings.in_dev {
@@ -5972,7 +5980,7 @@ impl CyberApp {
                 egui::ComboBox::from_id_salt("out_dev").selected_text(shown(&sel)).width(col_w - 8.0).show_ui(ui, |ui| {
                     ui.selectable_value(&mut sel, String::new(), &default);
                     for d in &outs {
-                        ui.selectable_value(&mut sel, d.clone(), d);
+                        ui.selectable_value(&mut sel, d.clone(), shown(d)).on_hover_text(d);
                     }
                 });
                 if sel != self.settings.out_dev {

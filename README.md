@@ -610,12 +610,12 @@ BitTorrent): **где угодно в интернете, без сервера 
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.22.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.22.1-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.22.0-linux-x86_64.tar.gz
-cd cybercord-0.22.0-linux-x86_64
+tar xf cybercord-0.22.1-linux-x86_64.tar.gz
+cd cybercord-0.22.1-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
