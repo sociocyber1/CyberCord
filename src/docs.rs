@@ -46,14 +46,21 @@ impl Doc {
     }
 }
 
-pub fn image(stem: &str) -> Option<(&'static str, &'static [u8])> {
+/// Embedded picture for a stem: (texture key, bytes, height / width).
+pub fn image(stem: &str) -> Option<(&'static str, &'static [u8], f32)> {
+    const STD: f32 = 300.0 / 560.0;
+    const COMIC: f32 = 1024.0 / 1536.0;
     Some(match stem {
-        "words-map" => ("doc_words_map", include_bytes!("../assets/docs/words-map.png")),
-        "words-bridge" => ("doc_words_bridge", include_bytes!("../assets/docs/words-bridge.png")),
-        "consequences-chain" => ("doc_cons_chain", include_bytes!("../assets/docs/consequences-chain.png")),
-        "consequences-planet" => ("doc_cons_planet", include_bytes!("../assets/docs/consequences-planet.png")),
-        "sce-city" => ("doc_sce_city", include_bytes!("../assets/docs/sce-city.png")),
-        "atom-generator" => ("doc_atom", include_bytes!("../assets/docs/atom-generator.png")),
+        "words-map" => ("doc_words_map", include_bytes!("../assets/docs/words-map.png"), STD),
+        "words-bridge" => ("doc_words_bridge", include_bytes!("../assets/docs/words-bridge.png"), STD),
+        "consequences-chain" => ("doc_cons_chain", include_bytes!("../assets/docs/consequences-chain.png"), STD),
+        "consequences-planet" => ("doc_cons_planet", include_bytes!("../assets/docs/consequences-planet.png"), STD),
+        "sce-city" => ("doc_sce_city", include_bytes!("../assets/docs/sce-city.png"), STD),
+        "atom-generator" => ("doc_atom", include_bytes!("../assets/docs/atom-generator.png"), STD),
+        "atom-waves" => ("doc_atom_waves", include_bytes!("../assets/docs/atom-waves.png"), STD),
+        "atom-fractal" => ("doc_atom_fractal", include_bytes!("../assets/docs/atom-fractal.png"), STD),
+        "atom-comic.ru" => ("doc_atom_comic_ru", include_bytes!("../assets/docs/atom-comic.ru.jpg"), COMIC),
+        "atom-comic.en" => ("doc_atom_comic_en", include_bytes!("../assets/docs/atom-comic.en.jpg"), COMIC),
         _ => return None,
     })
 }
@@ -164,6 +171,11 @@ fn inline_job(text: &str, size: f32, color: Color32, width: f32) -> LayoutJob {
             i += 1;
             continue;
         }
+        if c == '`' {
+            // `code` marks (channel names): shown as plain text
+            i += 1;
+            continue;
+        }
         if c == '[' {
             // [text](url) inside a paragraph: keep the text only
             let rest: String = chars[i + 1..].iter().collect();
@@ -197,7 +209,8 @@ fn internal(url: &str) -> bool {
 }
 
 /// Draw a document. `tex` turns an embedded PNG into a texture. Returns the
-/// target of a clicked internal link (a built-in PDF), if any.
+/// target of a clicked internal link (a built-in PDF), if any, or
+/// `zoom:<stem>` when a picture was clicked (shown full-screen by the app).
 pub fn show(ui: &mut egui::Ui, md: &str, tex: &mut dyn FnMut(&egui::Context, &'static str, &'static [u8]) -> egui::TextureId) -> Option<String> {
     let c = th();
     let w = ui.available_width();
@@ -248,12 +261,16 @@ pub fn show(ui: &mut egui::Ui, md: &str, tex: &mut dyn FnMut(&egui::Context, &'s
                 ui.add_space(6.0);
             }
             Block::Image(stem) => {
-                if let Some((key, png)) = image(stem) {
+                if let Some((key, png, aspect)) = image(stem) {
                     let id = tex(ui.ctx(), key, png);
-                    let iw = w.min(560.0);
+                    // wide comics use the whole column; small drawings stay at 560
+                    let iw = if aspect > 0.6 { w } else { w.min(560.0) };
                     ui.add_space(4.0);
                     ui.vertical_centered(|ui| {
-                        ui.add(egui::Image::new(egui::load::SizedTexture::new(id, egui::vec2(iw, iw * 300.0 / 560.0))).rounding(egui::Rounding::same(14.0)));
+                        let r = ui.add(egui::Image::new(egui::load::SizedTexture::new(id, egui::vec2(iw, iw * aspect))).rounding(egui::Rounding::same(14.0)).sense(egui::Sense::click()));
+                        if r.on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() {
+                            clicked = Some(format!("zoom:{stem}"));
+                        }
                     });
                     ui.add_space(12.0);
                 }
@@ -268,12 +285,45 @@ pub fn show(ui: &mut egui::Ui, md: &str, tex: &mut dyn FnMut(&egui::Context, &'s
     clicked
 }
 
+/// A picture over the whole window, fitted with a margin. Returns true when
+/// it should close (click anywhere or Escape).
+pub fn zoom(ctx: &egui::Context, stem: &str, tex: &mut dyn FnMut(&egui::Context, &'static str, &'static [u8]) -> egui::TextureId) -> bool {
+    let Some((key, png, aspect)) = image(stem) else { return true };
+    let id = tex(ctx, key, png);
+    let screen = ctx.screen_rect();
+    let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    egui::Area::new(egui::Id::new("doc_zoom")).order(egui::Order::Debug).fixed_pos(screen.min).show(ctx, |ui| {
+        let r = ui.allocate_rect(screen, egui::Sense::click());
+        ui.painter().rect_filled(screen, egui::Rounding::ZERO, Color32::from_black_alpha(225));
+        let avail = screen.shrink(16.0);
+        let (mut w, mut h) = (avail.width(), avail.width() * aspect);
+        if h > avail.height() {
+            h = avail.height();
+            w = h / aspect;
+        }
+        let rect = egui::Rect::from_center_size(screen.center(), egui::vec2(w, h));
+        ui.painter().image(id, rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        if r.clicked() {
+            close = true;
+        }
+    });
+    close
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn all_documents_parse_and_have_pictures() {
+        for stem in ["atom-comic.ru", "atom-comic.en", "atom-waves", "atom-fractal"] {
+            let (_, bytes, aspect) = image(stem).unwrap();
+            let img = image::load_from_memory(bytes).unwrap();
+            assert!((img.height() as f32 / img.width() as f32 - aspect).abs() < 0.01, "{stem}");
+        }
+        // Russian readers get the Russian comic, everyone else the English one
+        assert!(Doc::Atom.text(Lang::Ru).contains("atom-comic.ru"));
+        assert!(Doc::Atom.text(Lang::En).contains("atom-comic.en"));
         for d in [Doc::WordsMatter, Doc::Consequences, Doc::Sce, Doc::Atom] {
             for l in [Lang::Ru, Lang::En] {
                 let blocks = parse(d.text(l));

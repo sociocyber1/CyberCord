@@ -276,6 +276,8 @@ pub struct CyberApp {
     show_downloads: bool,
     /// open in-app document ("Words matter" etc.) and when the last hint toast was shown
     doc_open: Option<Doc>,
+    /// A document picture opened full-screen (its stem).
+    doc_zoom: Option<String>,
     /// editing one of my messages: (channel, message id, new version index) and the draft it replaced
     editing: Option<(ChannelId, String, u32)>,
     edit_draft: String,
@@ -468,6 +470,7 @@ impl CyberApp {
             transfers: Vec::new(),
             show_downloads: false,
             doc_open: None,
+            doc_zoom: None,
             editing: None,
             edit_draft: String::new(),
             focus_input: 0,
@@ -938,7 +941,8 @@ impl CyberApp {
         let mut open_link: Option<String> = None;
         let c = th();
         let screen = ctx.screen_rect();
-        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        // Escape closes the zoomed picture first, then the document
+        let mut close = self.doc_zoom.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape));
         egui::Area::new(Id::new("doc_dim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             let r = ui.allocate_rect(screen, egui::Sense::click());
             ui.painter().rect_filled(screen, Rounding::ZERO, Color32::from_black_alpha(150));
@@ -986,11 +990,22 @@ impl CyberApp {
                 });
             });
         });
+        if let Some(stem) = self.doc_zoom.clone() {
+            let icons = &mut self.icons;
+            if docs::zoom(ctx, &stem, &mut |ctx, key, png| icons.get(ctx, key, png)) {
+                self.doc_zoom = None;
+            }
+            close = false;
+        }
         if close {
             self.doc_open = None;
         }
         if let Some(l) = open_link {
-            self.open_builtin_pdf(&l);
+            if let Some(stem) = l.strip_prefix("zoom:") {
+                self.doc_zoom = Some(stem.to_string());
+            } else {
+                self.open_builtin_pdf(&l);
+            }
         }
     }
 

@@ -31,7 +31,7 @@ pub const SERVERS: &[Server] = &[
         slug: "atom-generator",
         name: "Atom-Generator",
         accent: (0x81, 0x3D, 0x9C), // purple
-        channels: &["concept-overview", "feynman-plenty-of-room", "molecular-assembly", "energy-budget", "latex-docs"],
+        channels: &["concept-overview", "feynman-plenty-of-room", "molecular-assembly", "atom-hypotheses", "energy-budget", "latex-docs"],
         voice: &["lab-talk", "feynman-reading", "office-hours"],
         icon: include_bytes!("../assets/servers/atom-generator.png"),
     },

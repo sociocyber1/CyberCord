@@ -155,11 +155,92 @@ b += arrow(404)
 b += f'<ellipse cx="490" cy="150" rx="44" ry="14" fill="{L3}"/><path d="M452 146 q38 -70 76 0 z" fill="{ORANGE}"/><circle cx="476" cy="118" r="9" fill="{RED}"/><circle cx="498" cy="112" r="10" fill="{GREEN}"/><path d="M490 102 q6 -14 16 -16" stroke="{GREEN5}" stroke-width="3" fill="none"/>'
 imgs["atom-generator"] = b
 
+# 8. Hypothesis 1: the nucleus bobs like a ball on a river, its ripples hold the
+#    electron like a surfer in a trough; neighbouring atoms add their own waves.
+#    Inset: an orbit that fits a whole number of wavelengths (de Broglie).
+b = f'<rect x="0" y="120" width="560" height="180" rx="0" fill="url(#water)" opacity=".55"/>'
+b += f'<path d="M0 120 Q35 112 70 120 T140 120 T210 120 T280 120 T350 120 T420 120 T490 120 T560 120 V136 H0 Z" fill="{BLUE1}" opacity=".7"/>'
+cx, cy = 280, 196
+for k in range(6, 0, -1):
+    rx = 34 + k * 40; ry = rx * 0.3
+    op = 0.75 - k * 0.09
+    b += f'<ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry:.1f}" fill="none" stroke="#fff" stroke-width="{5-k*0.5:.1f}" opacity="{op:.2f}"/>'
+    b += f'<ellipse cx="{cx}" cy="{cy+5}" rx="{rx}" ry="{ry:.1f}" fill="none" stroke="{BLUE5}" stroke-width="2" opacity="{op*0.5:.2f}"/>'
+# neighbours at the edges, their ripples meet ours
+for (nx, col) in [(18, PURP), (542, GREEN)]:
+    for k in range(1, 4):
+        rx = 16 + k * 30
+        b += f'<ellipse cx="{nx}" cy="{cy+10}" rx="{rx}" ry="{rx*0.3:.1f}" fill="none" stroke="#fff" stroke-width="2.5" opacity="{0.6-k*0.12:.2f}"/>'
+    b += f'<circle cx="{nx}" cy="{cy}" r="17" fill="{col}" filter="url(#sh)"/><circle cx="{nx-5}" cy="{cy-6}" r="5" fill="#fff" opacity=".45"/>'
+# the nucleus: a cluster of protons and neutrons, bobbing and spinning on the water
+b += f'<ellipse cx="{cx}" cy="{cy-2}" rx="54" ry="15" fill="none" stroke="{ORANGE}" stroke-width="3" stroke-dasharray="1 0" opacity=".9"/>'
+b += f'<g filter="url(#sh)">'
+for (dx, dy, col) in [(-13, -6, RED), (13, -6, BLUE5), (0, -28, BLUE5), (-15, -30, RED), (15, -30, RED), (0, -6, RED), (-6, -17, BLUE5), (8, -17, RED)]:
+    b += f'<circle cx="{cx+dx}" cy="{cy+dy}" r="12" fill="{col}"/><circle cx="{cx+dx-4}" cy="{cy+dy-4}" r="3.5" fill="#fff" opacity=".45"/>'
+b += '</g>'
+b += f'<path d="M{cx-54} {cy-2} A54 15 0 0 0 {cx+54} {cy-2}" fill="none" stroke="{ORANGE}" stroke-width="3.5"/><path d="M{cx+54} {cy-2} m-4 -10 l4 10 l-11 2" fill="none" stroke="{ORANGE}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>'
+b += f'<path d="M{cx} {cy-50} v-34 m-9 9 l9 -9 l9 9 M{cx} {cy-50} m-9 -9 l9 9 l9 -9" stroke="{INK2}" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+# the electron: a small surfer on a board, sitting in a trough of ring 3
+ex, ey = cx + 150, cy + 22
+b += f'<path d="M{ex-26} {ey+12} Q{ex} {ey+20} {ex+26} {ey+12} Q{ex} {ey+6} {ex-26} {ey+12} Z" fill="{YEL}" stroke="{BROWN}" stroke-width="1.5"/>'
+b += f'<circle cx="{ex}" cy="{ey-4}" r="12" fill="{BLUE}" filter="url(#sh)"/><circle cx="{ex-4}" cy="{ey-8}" r="3.5" fill="#fff" opacity=".6"/>'
+b += f'<circle cx="{ex}" cy="{ey-4}" r="21" fill="none" stroke="{BLUE}" stroke-width="2" stroke-dasharray="3 4" opacity=".7"/>'
+b += f'<path d="M{ex-60} {ey+4} q15 -14 30 0" stroke="#fff" stroke-width="3" fill="none" opacity=".8"/><path d="M{ex+30} {ey+4} q15 -14 30 0" stroke="#fff" stroke-width="3" fill="none" opacity=".8"/>'
+# inset: standing wave wrapped around an orbit, n = 5
+ix, iy, R = 478, 62, 34
+pts = []
+for j in range(121):
+    a = 2 * math.pi * j / 120
+    r = R + 6 * math.sin(5 * a)
+    pts.append(f'{ix + r*math.cos(a):.1f},{iy + r*math.sin(a):.1f}')
+b += f'<g filter="url(#sh)"><circle cx="{ix}" cy="{iy}" r="52" fill="{L1}"/></g>'
+b += f'<circle cx="{ix}" cy="{iy}" r="{R}" fill="none" stroke="{L4}" stroke-width="1.5" stroke-dasharray="3 4"/>'
+b += f'<polyline points="{" ".join(pts)}" fill="none" stroke="{BLUE}" stroke-width="3" stroke-linejoin="round"/>'
+b += f'<circle cx="{ix}" cy="{iy}" r="7" fill="{RED}"/>'
+# a small sun: energy comes from outside
+b += f'<circle cx="70" cy="56" r="22" fill="{YEL}"/><circle cx="70" cy="56" r="32" fill="{YEL}" opacity=".25"/>'
+imgs["atom-waves"] = b
+
+# 9. Hypothesis 2: no void — zoom into a "point" and find smaller balls again
+b = ''
+# background: space filled with tiny dots everywhere (no emptiness)
+import random
+rnd = random.Random(7)
+for _ in range(260):
+    x, y = rnd.uniform(8, 552), rnd.uniform(8, 292)
+    b += f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{rnd.uniform(0.8, 2.2):.1f}" fill="{BLUE5}" opacity="{rnd.uniform(.12, .3):.2f}"/>'
+stages = [(80, 150, 62), (215, 150, 50), (330, 150, 40), (425, 150, 31), (500, 150, 24)]
+cols = [BLUE, RED, ORANGE, PURP, GREEN]
+for i in range(len(stages) - 1):
+    (x0, y0, r0), (x1, y1, r1) = stages[i], stages[i + 1]
+    # zoom cone from a small ball inside stage i to stage i+1
+    a0 = -0.5
+    sx, sy, sr = x0 + r0 * 0.42 * math.cos(a0), y0 + r0 * 0.42 * math.sin(a0), r0 * 0.16
+    b += f'<path d="M{sx} {sy-sr} L{x1} {y1-r1} L{x1} {y1+r1} L{sx} {sy+sr} Z" fill="{cols[i+1]}" opacity=".10"/>'
+    b += f'<line x1="{sx}" y1="{sy-sr}" x2="{x1}" y2="{y1-r1}" stroke="{INK2}" stroke-width="1.2" stroke-dasharray="3 4"/><line x1="{sx}" y1="{sy+sr}" x2="{x1}" y2="{y1+r1}" stroke="{INK2}" stroke-width="1.2" stroke-dasharray="3 4"/>'
+for i, (x, y, r) in enumerate(stages):
+    c = cols[i]
+    b += f'<g filter="url(#sh)"><circle cx="{x}" cy="{y}" r="{r}" fill="{L1}" stroke="{c}" stroke-width="2.5"/></g>'
+    # packed small balls inside (the "micro-balls")
+    rr = r * 0.16
+    for ring, n in [(0.0, 1), (0.42, 7), (0.75, 13)]:
+        for k in range(n):
+            a = 2 * math.pi * k / n - 0.5
+            px, py = x + ring * r * math.cos(a), y + ring * r * math.sin(a)
+            hl = (ring == 0.42 and k == 0) and i < len(stages) - 1
+            b += f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{rr:.1f}" fill="{c}" opacity="{1 if hl else 0.5}"' + (f' stroke="{INK}" stroke-width="1.4"' if hl else '') + '/>'
+for k in range(3):
+    b += f'<circle cx="{534 + k*9}" cy="150" r="2.6" fill="{INK2}" opacity="{0.8 - k*0.25:.2f}"/>'
+# a magnifying glass over the first stage
+b += f'<circle cx="80" cy="150" r="72" fill="none" stroke="{INK2}" stroke-width="5" opacity=".75"/><line x1="131" y1="201" x2="160" y2="232" stroke="{INK2}" stroke-width="10" stroke-linecap="round" opacity=".75"/>'
+imgs["atom-fractal"] = b
+
 for name, body in imgs.items():
     p = os.path.join(OUT, name + ".svg")
     open(p, "w").write(svg(body))
     hgt = 260 if name == "structural-differential" else 300
     if hgt != 300:
         open(p, "w").write(svg(body, h=hgt))
-    subprocess.run(["rsvg-convert", "-w", "560", "-h", str(hgt), "-o", os.path.join(AS, name + ".png"), p], check=True)
+    k = 2 if name in ("atom-waves", "atom-fractal") else 1  # newer pictures: sharp on HiDPI
+    subprocess.run(["rsvg-convert", "-w", str(560 * k), "-h", str(hgt * k), "-o", os.path.join(AS, name + ".png"), p], check=True)
 print("ok", len(imgs))
