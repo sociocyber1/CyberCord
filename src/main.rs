@@ -120,6 +120,7 @@ fn main() -> anyhow::Result<()> {
         tcp_port: args.tcp_port,
         quic_port: args.quic_port,
         voice_bot: args.voice_bot.as_deref().map(make_bot),
+        keeper: st.relay_mail,
     };
     if let Some(dir) = &args.export_sounds {
         std::fs::create_dir_all(dir)?;
@@ -329,6 +330,8 @@ fn run_headless(cfg: NetConfig, channel: &str, bot_room: Option<String>) -> anyh
                     }
                     talk_seen.insert(name, now);
                 }
+                UiEvent::E2e { peer } => println!("· end-to-end keys known: {}", &peer[..peer.len().min(16)]),
+                UiEvent::Mail { kept, users } => println!("· keeping {kept} sealed letters for {users} users"),
                 UiEvent::Call { peer, name, id, kind } => {
                     println!("· call {kind:?} from {name}");
                     match kind {

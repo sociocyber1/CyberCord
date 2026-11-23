@@ -31,6 +31,7 @@ fn nodes_meet_through_the_mainline_dht() {
             scan: true,
             status: String::new(),
             voice_bot: None,
+            keeper: true,
         })
     };
     let a = node("ann", 47811);

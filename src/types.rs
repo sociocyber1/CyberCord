@@ -215,6 +215,9 @@ pub struct ScoreRec {
     /// show who sits in which voice channel. Never set for private calls.
     #[serde(default)]
     pub voice: Option<String>,
+    /// Keeps offline mail for others right now (setting on, not in a call).
+    #[serde(default)]
+    pub keeper: bool,
     /// The user agreed to be found by name in people search.
     #[serde(default = "yes")]
     pub listed: bool,
@@ -443,6 +446,16 @@ pub enum Wire {
         #[serde(default)]
         nonce: u64,
     },
+    /// My public encryption keys, signed (control and DM topics).
+    Keys(crate::e2e::KeyBundle),
+    /// An end-to-end sealed direct message (DM topic).
+    Sealed(crate::e2e::Sealed),
+    /// "Please keep this sealed letter for its recipient" (the keeper's mail topic).
+    MailPut { item: crate::e2e::Sealed },
+    /// Letters a keeper kept for you (your mail topic).
+    MailDrop { items: Vec<crate::e2e::Sealed> },
+    /// "Received, you may delete them" (the keeper's mail topic).
+    MailAck { ids: Vec<String> },
     /// A call between two friends (DM topic): ring, answer, hang up.
     /// `id` names the call; `round` keeps repeated rings from being dropped
     /// as duplicates by gossip.

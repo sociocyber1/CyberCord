@@ -348,6 +348,9 @@ pub struct Settings {
     pub snd_start: bool,
     #[serde(default)]
     pub snd_sent: bool,
+    /// Keep sealed offline mail for other users (off on a weak connection).
+    #[serde(default = "yes")]
+    pub relay_mail: bool,
 }
 
 fn hundred() -> f32 {

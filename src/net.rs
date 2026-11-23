@@ -54,6 +54,8 @@ pub enum Cmd {
     SendChat { channel: ChannelId, body: String },
     RequestSync { channel: ChannelId, since_ms: u64 },
     JoinVoice { channel: ChannelId },
+    /// Keep (or stop keeping) offline mail for others.
+    SetKeeper(bool),
     /// Send a call signal to a friend (DM topic).
     Call { peer: String, id: u64, kind: crate::types::CallKind, round: u32 },
     LeaveVoice,
@@ -136,6 +138,10 @@ pub enum UiEvent {
     /// Voice counters for developer mode: frames sent / received since the
     /// last report (every 5 s), and the playback buffer in ms.
     VoiceStats { sent: u32, recv: u32, buffer_ms: u32 },
+    /// This friend's encryption keys are known: direct messages are sealed end to end.
+    E2e { peer: String },
+    /// Offline mail I keep for others: letters, for how many people.
+    Mail { kept: usize, users: usize },
     /// A call signal from a friend.
     Call { peer: String, name: String, id: u64, kind: crate::types::CallKind },
     /// Someone's public voice room (from their heartbeat); None = not in voice.
@@ -183,6 +189,8 @@ pub struct NetConfig {
     pub status: String,
     /// Developer mode: this node is a voice test bot (no audio devices).
     pub voice_bot: Option<VoiceBot>,
+    /// Keep sealed offline mail for other users (Settings → Privacy).
+    pub keeper: bool,
 }
 
 /// Developer test bots for checking voice on one computer.
@@ -414,6 +422,46 @@ fn provide_name(swarm: &mut Swarm<CyberBehaviour>, name: &str, provided: &mut Ve
     }
 }
 
+/// Bytes to publish for a chat event: a DM to a friend whose keys we know is
+/// sealed end to end (and returned, for offline mail); anything else as is.
+fn chat_payload(ev: &ChatEvent, local_id: &str, bundles: &HashMap<String, crate::e2e::KeyBundle>, history: Option<u64>) -> (Vec<u8>, Option<crate::e2e::Sealed>) {
+    if ev.channel.is_dm() {
+        if let (Some(b), Ok(plain)) = (bundles.get(&ev.channel.channel), serde_json::to_vec(ev)) {
+            if let Some(s) = crate::e2e::seal(local_id, b, &ev.id, &plain) {
+                return (Wire::Sealed(s.clone()).encode(), Some(s));
+            }
+        }
+    }
+    let w = match history {
+        Some(nonce) => Wire::History { ev: ev.clone(), nonce },
+        None => Wire::Chat(ev.clone()),
+    };
+    (w.encode(), None)
+}
+
+/// Open a sealed DM: it must be for me, and the signed inner event must be by its sender.
+fn open_sealed(me: &crate::e2e::Secrets, local_id: &str, s: &crate::e2e::Sealed) -> Option<ChatEvent> {
+    let plain = crate::e2e::open(me, local_id, s)?;
+    let mut ev: ChatEvent = serde_json::from_slice(&plain).ok()?;
+    if ev.from != s.from {
+        return None;
+    }
+    ev.channel = ChannelId::dm(s.from.clone());
+    Some(ev)
+}
+
+fn load_bundles() -> HashMap<String, crate::e2e::KeyBundle> {
+    let list: Vec<crate::e2e::KeyBundle> = std::fs::read_to_string(store::data_dir().join("keys.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    list.into_iter().filter(|b| b.verify()).map(|b| (b.peer.clone(), b)).collect()
+}
+
+fn save_bundles(b: &HashMap<String, crate::e2e::KeyBundle>) {
+    let list: Vec<&crate::e2e::KeyBundle> = b.values().collect();
+    if let Ok(t) = serde_json::to_string(&list) {
+        let _ = std::fs::write(store::data_dir().join("keys.json"), t);
+    }
+}
+
 fn dial_peer(swarm: &mut Swarm<CyberBehaviour>, peer: PeerId, addrs: Vec<Multiaddr>) {
     let opts = DialOpts::peer_id(peer)
         .addresses(addrs)
@@ -491,6 +539,28 @@ async fn run(
     let control = IdentTopic::new(CONTROL_TOPIC);
     swarm.behaviour_mut().gossipsub.subscribe(&control)?;
     let control_hash = control.hash();
+
+    // End-to-end encryption (hybrid X25519 + ML-KEM-768) and offline mail.
+    let e2e = crate::e2e::Secrets::load_or_create();
+    let my_keys = e2e.bundle(&keypair);
+    let mut bundles = load_bundles();
+    for p in bundles.keys() {
+        emit(&event_tx, UiEvent::E2e { peer: p.clone() });
+    }
+    let mut mailbox = crate::mailbox::Mailbox::load();
+    let mut keeper_on = cfg.keeper;
+    let my_mail = IdentTopic::new(format!("cc/mail/{local_id}"));
+    swarm.behaviour_mut().gossipsub.subscribe(&my_mail)?;
+    let my_mail_hash = my_mail.hash();
+    for r in mailbox.recipients() {
+        let _ = swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&crate::mailbox::key(&r)));
+    }
+    emit(&event_tx, UiEvent::Mail { kept: mailbox.total(), users: mailbox.items.len() });
+    let mut mail_sent: HashMap<String, Instant> = HashMap::new();
+    let mut mailbox_queries: HashSet<kad::QueryId> = HashSet::new();
+    let mut mail_looked: Option<Instant> = None;
+    // who keeps mail right now: peer → (score, heard at)
+    let mut keepers: HashMap<String, (f64, u64)> = HashMap::new();
 
     // Listen: default port 47100, random fallback (e.g. second copy on one machine).
     if !no_listen {
@@ -595,6 +665,54 @@ async fn run(
     // Media transfer state.
     let mut incoming: HashMap<String, Assembly> = HashMap::new();
     let mut wanted: HashMap<String, (ChannelId, Instant, u8)> = HashMap::new();
+    // Accept a (verified) chat event: store it, fetch its media, show it.
+    macro_rules! accept_chat {
+        ($ev:expr, $author:expr) => {{
+            let ev: ChatEvent = $ev;
+            let set = seen_ids.entry(ev.channel.clone()).or_insert_with(|| store::load_ids(&ev.channel));
+            if set.insert(ev.id.clone()) {
+                if !ev.name.is_empty() {
+                    names.entry($author).or_insert(ev.name.clone());
+                }
+                if let Some(a) = &ev.attach {
+                    if a.kind != MediaKind::File && !store::has_blob(&a.hash) && a.size as usize <= MAX_BLOB {
+                        wanted.entry(a.hash.clone()).or_insert((ev.channel.clone(), Instant::now(), 0));
+                    }
+                }
+                store::append(&ev);
+                if let (true, Some(target)) = (ev.deleted, ev.edits.as_deref()) {
+                    store::redact(&ev.channel, target, &ev.from);
+                    deletes.insert(target.to_string(), ev.from.clone());
+                } else if ev.edits.is_some() || deletes.contains_key(&ev.id) {
+                    if let Some(author) = deletes.get(ev.edits.as_deref().unwrap_or(&ev.id)) {
+                        store::redact(&ev.channel, ev.edits.as_deref().unwrap_or(&ev.id), author);
+                    }
+                }
+                emit(&event_tx, UiEvent::Chat(ev));
+            }
+        }};
+    }
+    // Send a chat event: sealed for a DM friend whose keys are known; if the
+    // friend is offline, the sealed letter also goes to up to 3 keepers.
+    macro_rules! publish_chat {
+        ($topic:expr, $ev:expr) => {{
+            let ev: &ChatEvent = $ev;
+            let (bytes, sealed) = chat_payload(ev, &local_id, &bundles, None);
+            let r = swarm.behaviour_mut().gossipsub.publish($topic, bytes);
+            if let Some(s) = sealed {
+                let friend_on = parse_peer(&ev.channel.channel).map(|p| connected_peers.contains(&p)).unwrap_or(false);
+                if !friend_on {
+                    let now = now_ms();
+                    let mut ks: Vec<(&String, &(f64, u64))> = keepers.iter().filter(|(k, (_, t))| **k != ev.channel.channel && now.saturating_sub(*t) < 30_000 && parse_peer(k).map(|p| connected_peers.contains(&p)).unwrap_or(false)).collect();
+                    ks.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
+                    for (k, _) in ks.into_iter().take(3) {
+                        let _ = swarm.behaviour_mut().gossipsub.publish(IdentTopic::new(format!("cc/mail/{k}")), Wire::MailPut { item: s.clone() }.encode());
+                    }
+                }
+            }
+            r
+        }};
+    }
     // Rooms the user has opened: when a new peer subscribes to one of them we ask
     // it for what we missed (the request can only reach peers known to be in the room).
     let mut opened: HashSet<ChannelId> = HashSet::new();
@@ -677,7 +795,7 @@ async fn run(
                         store::append(&ev);
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
                         let topic = IdentTopic::new(channel.topic());
-                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, Wire::Chat(ev).encode()) {
+                        if let Err(e) = publish_chat!(topic, &ev) {
                             emit(&event_tx, UiEvent::Status(format!("saved; will sync when nodes are connected ({e})")));
                         }
                     }
@@ -700,8 +818,11 @@ async fn run(
                         voice_room = Some(channel.clone());
                         mic.store(false, Ordering::Relaxed);
                         emit(&event_tx, UiEvent::VoiceJoined { room: Some(format!("{}/{}", channel.guild, channel.channel)) });
-                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone() };
+                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone(), keeper: keeper_on && voice_room.is_none() };
                         let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
+                    }
+                    Cmd::SetKeeper(on) => {
+                        keeper_on = on;
                     }
                     Cmd::Call { peer, id, kind, round } => {
                         let t = IdentTopic::new(dm_topic(&local_id, &peer));
@@ -714,7 +835,7 @@ async fn run(
                         mic.store(false, Ordering::Relaxed);
                         voice_io = None;
                         emit(&event_tx, UiEvent::VoiceJoined { room: None });
-                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone() };
+                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone(), keeper: keeper_on && voice_room.is_none() };
                         let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
                     }
                     Cmd::SetMic(on) => mic.store(on, Ordering::Relaxed),
@@ -794,7 +915,7 @@ async fn run(
                     }
                     Cmd::SetStatus(st) => {
                         status = st;
-                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone() };
+                        let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score: last_score, ts_ms: now_ms(), reachable: reachable == Some(true), voice: public_room(&voice_room), listed, status: status.clone(), keeper: keeper_on && voice_room.is_none() };
                         let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
                     }
                     Cmd::ShareFile { channel, path, body } => {
@@ -861,7 +982,7 @@ async fn run(
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
                         emit(&event_tx, UiEvent::BlobReady { hash: hash.clone() });
                         let topic = topic_for(&local_id, &channel);
-                        let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), Wire::Chat(ev).encode());
+                        let _ = publish_chat!(topic.clone(), &ev);
                         let n = publish_blob(&mut swarm, &topic, &hash, &bytes);
                         last_served.insert(hash, Instant::now());
                         if n == 0 {
@@ -888,7 +1009,7 @@ async fn run(
                             store::redact(&channel, &target, &local_id);
                         }
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
-                        let _ = swarm.behaviour_mut().gossipsub.publish(topic_for(&local_id, &channel), Wire::Chat(ev).encode());
+                        let _ = publish_chat!(topic_for(&local_id, &channel), &ev);
                     }
                     Cmd::SendDm { peer_id, body } => {
                         let ch = ChannelId::dm(peer_id.clone());
@@ -898,7 +1019,7 @@ async fn run(
                         store::append(&ev);
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
                         let t = IdentTopic::new(dm_topic(&local_id, &peer_id));
-                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(t, Wire::Chat(ev).encode()) {
+                        if let Err(e) = publish_chat!(t, &ev) {
                             emit(&event_tx, UiEvent::Status(format!("DM saved; it syncs when your friend is reachable ({e})")));
                         }
                     }
@@ -955,6 +1076,28 @@ async fn run(
 
             _ = ticker.tick() => {
                 tick_n += 1;
+                if (profile_due || tick_n % 24 == 0) && !connected_peers.is_empty() {
+                    let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Keys(my_keys.clone()).encode());
+                }
+                // a keeper hands letters to recipients who are here now
+                if !mailbox.items.is_empty() {
+                    mailbox.prune(now_ms());
+                    for r in mailbox.recipients() {
+                        let here = parse_peer(&r).map(|p| connected_peers.contains(&p)).unwrap_or(false);
+                        if here && mail_sent.get(&r).map(|t| t.elapsed().as_secs() >= 20).unwrap_or(true) {
+                            for chunk in mailbox.for_recipient(&r).chunks(40) {
+                                let _ = swarm.behaviour_mut().gossipsub.publish(IdentTopic::new(format!("cc/mail/{r}")), Wire::MailDrop { items: chunk.to_vec() }.encode());
+                            }
+                            mail_sent.insert(r, Instant::now());
+                        }
+                    }
+                }
+                // look for keepers holding mail for me (soon after start, then every 10 min)
+                if !connected_peers.is_empty() && mail_looked.map(|t| t.elapsed().as_secs() >= 600).unwrap_or(tick_n >= 2) {
+                    mail_looked = Some(Instant::now());
+                    let id = swarm.behaviour_mut().kad.get_providers(kad::RecordKey::new(&crate::mailbox::key(&local_id)));
+                    mailbox_queries.insert(id);
+                }
                 if voice_room.is_some() {
                     let buffer_ms = voice_io.as_ref().and_then(|io| io.playback.lock().ok().map(|b| (b.len() as u64 * 1000 / voice::SAMPLE_RATE as u64) as u32)).unwrap_or(0);
                     emit(&event_tx, UiEvent::VoiceStats { sent: v_sent, recv: v_recv, buffer_ms });
@@ -990,7 +1133,7 @@ async fn run(
                 let score = 0.35 * (am_reachable as u8 as f64) + 0.3 * uptime_n + 0.25 * conns_n + 0.1 * stable_rand(&local_id);
                 scores.insert(local_id.clone(), (score, now_ms()));
                 last_score = score;
-                let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score, ts_ms: now_ms(), reachable: am_reachable, voice: public_room(&voice_room), listed, status: status.clone() };
+                let rec = ScoreRec { peer: local_id.clone(), name: name.clone(), score, ts_ms: now_ms(), reachable: am_reachable, voice: public_room(&voice_room), listed, status: status.clone(), keeper: keeper_on && voice_room.is_none() };
                 let _ = swarm.behaviour_mut().gossipsub.publish(control.clone(), Wire::Score(rec).encode());
                 recompute_hub(&scores, &mut last_hub, &event_tx);
 
@@ -1132,7 +1275,7 @@ async fn run(
                         seen_ids.entry(channel.clone()).or_default().insert(ev.id.clone());
                         store::append(&ev);
                         emit(&event_tx, UiEvent::Chat(ev.clone()));
-                        let _ = swarm.behaviour_mut().gossipsub.publish(topic_for(&local_id, &channel), Wire::Chat(ev).encode());
+                        let _ = publish_chat!(topic_for(&local_id, &channel), &ev);
                     }
                     Bg::ShareFailed(e) => emit(&event_tx, UiEvent::Status(format!("cannot share the file: {e}"))),
                     Bg::Verified(hash, ok) => {
@@ -1438,6 +1581,14 @@ async fn run(
                             for info in ok.peers {
                                 book.learn(info.peer_id, info.addrs.clone(), "dht");
                             }
+                        } else if let (true, kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. }))) = (mailbox_queries.contains(&id), &result) {
+                            // keepers with mail for me: meet them, they hand it over
+                            for pid in providers.iter().filter(|p| **p != local_peer).take(8) {
+                                if !connected_peers.contains(pid) {
+                                    let addrs = book.addrs(pid);
+                                    dial_peer(&mut swarm, *pid, addrs);
+                                }
+                            }
                         } else if let (Some(h), kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders { providers, .. }))) = (provider_queries.get(&id).cloned(), &result) {
                             // Holders of a file we want: remember and meet them (≤ 8 dials).
                             let set = file_providers.entry(h).or_default();
@@ -1466,6 +1617,7 @@ async fn run(
                             }
                         }
                         if step.last {
+                            mailbox_queries.remove(&id);
                             search_queries.remove(&id);
                             provider_queries.remove(&id);
                         }
@@ -1523,8 +1675,15 @@ async fn run(
                         }
                     }
                     SwarmEvent::Behaviour(CyberBehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
-                        let Some(wire) = Wire::decode(&message.data) else { continue };
+                        let Some(mut wire) = Wire::decode(&message.data) else { continue };
                         let th = message.topic.clone();
+                        if let Wire::Sealed(s) = &wire {
+                            // a sealed DM: only for me, and the inner author must be the sender
+                            match open_sealed(&e2e, &local_id, s) {
+                                Some(ev) => wire = Wire::Chat(ev),
+                                None => continue,
+                            }
+                        }
                         match wire {
                             Wire::Chat(mut ev) | Wire::History { mut ev, .. } => {
                                 if let Some(local) = topic_of_hash.get(&th) {
@@ -1535,28 +1694,51 @@ async fn run(
                                 if !ev.admit() {
                                     continue; // forged signature, or an unsigned edit/delete
                                 }
-                                let set = seen_ids.entry(ev.channel.clone()).or_insert_with(|| store::load_ids(&ev.channel));
-                                if set.insert(ev.id.clone()) {
-                                    if !ev.name.is_empty() {
-                                        names.entry(message_author(&message).unwrap_or_default()).or_insert(ev.name.clone());
+                                accept_chat!(ev, message_author(&message).unwrap_or_default());
+                            }
+                            Wire::Sealed(_) => {}
+                            Wire::Keys(b) => {
+                                if b.peer != local_id && b.verify() {
+                                    let newer = bundles.get(&b.peer).map(|o| b.ts_ms > o.ts_ms).unwrap_or(true);
+                                    if newer {
+                                        emit(&event_tx, UiEvent::E2e { peer: b.peer.clone() });
+                                        bundles.insert(b.peer.clone(), b);
+                                        save_bundles(&bundles);
                                     }
-                                    if let Some(a) = &ev.attach {
-                                        if a.kind != MediaKind::File && !store::has_blob(&a.hash) && a.size as usize <= MAX_BLOB {
-                                            wanted.entry(a.hash.clone()).or_insert((ev.channel.clone(), Instant::now(), 0));
-                                        }
-                                    }
-                                    store::append(&ev);
-                                    if let (true, Some(target)) = (ev.deleted, ev.edits.as_deref()) {
-                                        store::redact(&ev.channel, target, &ev.from);
-                                        deletes.insert(target.to_string(), ev.from.clone());
-                                    } else if ev.edits.is_some() || deletes.contains_key(&ev.id) {
-                                        if let Some(author) = deletes.get(ev.edits.as_deref().unwrap_or(&ev.id)) {
-                                            store::redact(&ev.channel, ev.edits.as_deref().unwrap_or(&ev.id), author);
-                                        }
-                                    }
-                                    emit(&event_tx, UiEvent::Chat(ev));
                                 }
                             }
+                            Wire::MailPut { item } if th == my_mail_hash => {
+                                let by = message_author(&message).unwrap_or_default();
+                                if keeper_on && voice_room.is_none() && item.to != local_id && mailbox.put(item.clone(), &by, now_ms()) {
+                                    let _ = swarm.behaviour_mut().kad.start_providing(kad::RecordKey::new(&crate::mailbox::key(&item.to)));
+                                    mailbox.save();
+                                    emit(&event_tx, UiEvent::Mail { kept: mailbox.total(), users: mailbox.items.len() });
+                                }
+                            }
+                            Wire::MailDrop { items } if th == my_mail_hash => {
+                                let mut ids = Vec::new();
+                                for s in items {
+                                    ids.push(s.id.clone());
+                                    if let Some(mut ev) = open_sealed(&e2e, &local_id, &s) {
+                                        if ev.admit() {
+                                            accept_chat!(ev, s.from.clone());
+                                        }
+                                    }
+                                }
+                                if let Some(k) = message_author(&message) {
+                                    let _ = swarm.behaviour_mut().gossipsub.publish(IdentTopic::new(format!("cc/mail/{k}")), Wire::MailAck { ids }.encode());
+                                }
+                            }
+                            Wire::MailAck { ids } if th == my_mail_hash => {
+                                if let Some(by) = message_author(&message) {
+                                    if mailbox.ack(&by, &ids) {
+                                        swarm.behaviour_mut().kad.stop_providing(&kad::RecordKey::new(&crate::mailbox::key(&by)));
+                                    }
+                                    mailbox.save();
+                                    emit(&event_tx, UiEvent::Mail { kept: mailbox.total(), users: mailbox.items.len() });
+                                }
+                            }
+                            Wire::MailPut { .. } | Wire::MailDrop { .. } | Wire::MailAck { .. } => {}
                             Wire::Call { id, kind, name: caller, .. } => {
                                 // only on the DM topic, and only from that friend
                                 if let (Some(local), Some(author)) = (topic_of_hash.get(&th), message_author(&message)) {
@@ -1570,7 +1752,8 @@ async fn run(
                                     let nonce: u64 = rand::random();
                                     for ev in store::load_since(&local, since_ms, SYNC_REPLY_CAP) {
                                         let topic = IdentTopic::new(message.topic.as_str());
-                                        let _ = swarm.behaviour_mut().gossipsub.publish(topic, Wire::History { ev, nonce }.encode());
+                                        let (bytes, _) = chat_payload(&ev, &local_id, &bundles, Some(nonce));
+                                        let _ = swarm.behaviour_mut().gossipsub.publish(topic, bytes);
                                     }
                                 }
                             }
@@ -1583,6 +1766,11 @@ async fn run(
                                 }
                             }
                             Wire::Score(rec) if th == control_hash => {
+                                if rec.keeper && rec.peer != local_id {
+                                    keepers.insert(rec.peer.clone(), (rec.score, now_ms()));
+                                } else {
+                                    keepers.remove(&rec.peer);
+                                }
                                 if rec.reachable {
                                     if let Some(pid) = parse_peer(&rec.peer) {
                                         reachable_peers.insert(pid);

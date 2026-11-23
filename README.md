@@ -2,7 +2,7 @@
   <img src="docs/img/hero.svg" alt="CyberCord — сеть, которую держат люди. Без серверов. Без банов. Без лимитов. Вы отвечаете за будущее.">
 </p>
 
-<h1 align="center">CyberCord 0.21</h1>
+<h1 align="center">CyberCord 0.22</h1>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/wordmark-light.svg">
@@ -126,6 +126,29 @@ BitTorrent): **где угодно в интернете, без сервера 
 Пока друзей нет, «+» мягко пульсирует, чтобы его было сразу видно.
 
 ![Добавить друга](docs/img/screen-add-friend.png)
+
+## Что нового в 0.22 — шифрование и письма, пока друг не в сети
+
+- **Сквозное шифрование личных сообщений с защитой от квантовых
+  компьютеров.** Каждое сообщение запечатывается только для друга гибридом
+  **X25519 + ML-KEM-768** (стандарт NIST FIPS 203) и XChaCha20-Poly1305;
+  размер выравнивается шагом 256 байт. Чтобы прочесть, нужны оба ключа, —
+  записанное сегодня останется закрытым и завтра. Ключи публикуются
+  подписанными ключом личности; подменить их нельзя. В шапке лички видно
+  «· сквозное шифрование». Раньше личка шифровалась только в пути между
+  узлами.
+- **Сообщение дойдёт, даже если друг не в сети, а вы выключили компьютер.**
+  Запечатанное письмо отдаётся 2–3 «хранителям» — узлам других
+  пользователей, которые давно в сети, не выключили эту функцию и **не в
+  звонке**. Хранитель не может прочесть письмо; он объявляет в DHT «у меня
+  письмо для X», и когда X появляется — где угодно в интернете — забирает
+  его, подтверждает, и хранитель удаляет копию. Без серверов.
+  - Нагрузка маленькая: только текст (≤ 64 КБ на письмо), ≤ 200 писем на
+    человека, ≤ 2000 всего, ≤ 120 в час от одного отправителя, 14 дней.
+  - **Настройки → Приватность → «Хранить запечатанные письма для тех, кто
+    не в сети»** — выключите при слабом или платном интернете.
+- Пока не шифруются сквозным шифрованием: картинки и файлы в личке и звук
+  звонков (они защищены в пути между узлами) — это следующий шаг.
 
 ## Что нового в 0.21
 
@@ -587,12 +610,12 @@ BitTorrent): **где угодно в интернете, без сервера 
 
 ## Установка (Linux)
 
-Скачайте `cybercord-0.21.0-linux-x86_64.tar.gz` со страницы
+Скачайте `cybercord-0.22.0-linux-x86_64.tar.gz` со страницы
 [Releases](https://github.com/sociocyber1/CyberCord/releases/latest) и выполните:
 
 ```bash
-tar xf cybercord-0.21.0-linux-x86_64.tar.gz
-cd cybercord-0.21.0-linux-x86_64
+tar xf cybercord-0.22.0-linux-x86_64.tar.gz
+cd cybercord-0.22.0-linux-x86_64
 ./install.sh          # CyberCord появится в меню приложений
 ```
 
@@ -798,6 +821,8 @@ Windows: `cargo build --release --features voice,camera` (звук через WA
 ---
 
 ### English (short)
+
+**0.22:** end-to-end encrypted direct messages — hybrid X25519 + ML-KEM-768 (post-quantum, NIST FIPS 203) with XChaCha20-Poly1305 and size padding; offline delivery through "keepers" (other users’ nodes that are online for long, not in a call, and have it enabled) that hold sealed letters, announce them in the DHT and delete them after the recipient confirms.
 
 **0.21:** short handles `@name-xxxxxx` (the tail is derived from the user's key, so it cannot be taken over), found anywhere through the users' own DHT — no server keeps a list.
 

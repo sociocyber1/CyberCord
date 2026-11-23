@@ -224,6 +224,9 @@ pub struct CyberApp {
     call_tone_at: Option<Instant>,
     show_invite: bool,
     show_add_friend: bool,
+    /// friends whose encryption keys are known (DMs sealed end to end)
+    e2e_peers: HashSet<String>,
+    mail_kept: (usize, usize),
     /// adding a friend by handle: (tag, name to give them, since)
     pending_handle: Option<(String, String, Instant)>,
     invite_qr: Option<egui::TextureHandle>,
@@ -404,6 +407,8 @@ impl CyberApp {
             call_tone_at: None,
             show_invite: false,
             show_add_friend: false,
+            e2e_peers: HashSet::new(),
+            mail_kept: (0, 0),
             pending_handle: None,
             invite_qr: None,
             show_papers: false,
@@ -748,6 +753,10 @@ impl CyberApp {
                     self.talkers.insert(name, now_ms());
                 }
                 UiEvent::Call { peer, name, id, kind } => self.on_call(peer, name, id, kind),
+                UiEvent::E2e { peer } => {
+                    self.e2e_peers.insert(peer);
+                }
+                UiEvent::Mail { kept, users } => self.mail_kept = (kept, users),
                 UiEvent::VoiceStats { sent, recv, buffer_ms } => {
                     self.voice_stats = Some((sent, recv, buffer_ms));
                 }
@@ -2063,6 +2072,11 @@ impl CyberApp {
                 dot(ui, if online { th().green } else { th().line });
                 ui.label(RichText::new(format!("@  {}", self.friend_name(&ch.channel))).color(th().ink).b().size(17.0));
                 ui.colored_label(th().ink2, format!("· {}", if online { self.t("dm_online") } else { self.t("dm_offline") }));
+                if self.e2e_peers.contains(&ch.channel) {
+                    ui.label(RichText::new(self.t("e2e_on")).color(th().green_text).small()).on_hover_text(self.t("e2e_on_tip"));
+                } else {
+                    ui.label(RichText::new(self.t("e2e_wait")).color(th().ink2).small()).on_hover_text(self.t("e2e_wait_tip"));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let in_this = self.in_voice.as_deref().map(|r| r.ends_with(&ch.channel)).unwrap_or(false);
                     if !in_this {
@@ -5719,6 +5733,18 @@ impl CyberApp {
                             ui.add_space(6.0);
                             ui.colored_label(th().ink2, self.t("global_note"));
                             ui.colored_label(th().ink2, RichText::new(self.t("restart_note")).small().italics());
+                            ui.add_space(18.0);
+                            let label = self.t("keeper_opt");
+                            if ui.checkbox(&mut self.settings.relay_mail, label).changed() {
+                                store::save_settings(&self.settings);
+                                let _ = self.handle.cmd_tx.send(Cmd::SetKeeper(self.settings.relay_mail));
+                            }
+                            ui.add_space(6.0);
+                            ui.add(egui::Label::new(RichText::new(self.t("keeper_note")).color(th().ink2)).wrap());
+                            ui.colored_label(th().ink2, RichText::new(self.t("keeper_stat").replace("{n}", &self.mail_kept.0.to_string()).replace("{u}", &self.mail_kept.1.to_string())).small());
+                            ui.add_space(18.0);
+                            ui.label(RichText::new(self.t("e2e_h")).color(th().ink).b());
+                            ui.add(egui::Label::new(RichText::new(self.t("e2e_note")).color(th().ink2)).wrap());
                         }
                     }
                     ui.add_space(30.0);
